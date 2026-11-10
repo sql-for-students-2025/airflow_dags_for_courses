@@ -10,7 +10,7 @@ def rabbitmq_to_s3(run_id):
     from airflow.models import Variable
 
     connection = pika.BlockingConnection(pika.ConnectionParameters(
-        host=Variable.get('zadikian_aa_rabbitmq_host'),
+        host='rabbitmq.student.magnit.ru',
         port=int(Variable.get('zadikian_aa_rabbitmq_port', default_var='5672')),
         virtual_host=Variable.get('zadikian_aa_rabbitmq_vhost', default_var='/'),
         credentials=pika.PlainCredentials(
