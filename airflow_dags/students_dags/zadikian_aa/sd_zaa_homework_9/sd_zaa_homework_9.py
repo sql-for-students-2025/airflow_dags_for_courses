@@ -16,7 +16,7 @@ with DAG(
     start_date=datetime.datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['zadikian_aa', 'homework', 'hw_1'],
+    tags=['zadikian_aa', 'homework', 'hw_9'],
 ) as dag:
     task_1 = PythonOperator(
         task_id='rabbitmq_to_s3',

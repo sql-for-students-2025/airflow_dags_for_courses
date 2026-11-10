@@ -10,9 +10,9 @@ def rabbitmq_to_s3(run_id):
     from airflow.models import Variable
 
     connection = pika.BlockingConnection(pika.ConnectionParameters(
-        host=Variable.get('zadikian_aa_rabbitmq_host'),
-        port=int(Variable.get('zadikian_aa_rabbitmq_port', default_var='5672')),
-        virtual_host=Variable.get('zadikian_aa_rabbitmq_vhost', default_var='/'),
+        host='rabbitmq.student.magnit.ru',
+        port=5672,
+        virtual_host='/',
         credentials=pika.PlainCredentials(
             Variable.get('rabbit_mq_svc_login'), Variable.get('rabbit_mq_svc_password'),
         ),
@@ -59,25 +59,25 @@ def rabbitmq_to_s3(run_id):
 
 
 def s3_to_clickhouse(ti):
-    import clickhouse_connect
+    from clickhouse_driver import Client
     from airflow.models import Variable
 
     key = ti.xcom_pull(task_ids='rabbitmq_to_s3')
     if not key:
         return
-    client = clickhouse_connect.get_client(
+    client = Client(
         host=Variable.get('zadikian_aa_clickhouse_host', default_var='111.88.243.32'),
-        port=int(Variable.get('zadikian_aa_clickhouse_port', default_var='8123')),
-        username=Variable.get('zadikian_aa_clickhouse_login'),
+        port=9000,
+        user=Variable.get('zadikian_aa_clickhouse_login'),
         password=Variable.get('zadikian_aa_clickhouse_password'),
         database='zadikian_aa_db',
     )
     try:
-        messages = client.query(
-            "SELECT message FROM s3(s3_dad_ksu_datalab, filename={filename:String}, "
+        messages = client.execute(
+            "SELECT message FROM s3(s3_dad_ksu_datalab, filename=%(filename)s, "
             "format='JSONEachRow', structure='message String')",
-            parameters={'filename': 'dad-ksu-datalab/' + key},
-        ).result_rows
+            params={'filename': 'dad-ksu-datalab/' + key},
+        )
         tables = {'dim_date': [], 'dim_store': [], 'dim_product': [], 'dim_customer': [], 'fact_sales': []}
         sales = []
         days = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
@@ -126,10 +126,10 @@ def s3_to_clickhouse(ti):
             columns = list(rows[0])
             id_column = columns[0]
             check_columns = columns if table == 'fact_sales' else [id_column]
-            existing = client.query(
+            existing = client.execute(
                 f"SELECT {', '.join(check_columns)} FROM {table} WHERE {id_column} IN %(ids)s",
-                parameters={'ids': tuple({row[id_column] for row in rows})},
-            ).result_rows
+                params={'ids': tuple({row[id_column] for row in rows})},
+            )
             new_rows = {}
             for row in rows:
                 row_key = tuple(row[column] for column in check_columns)
@@ -137,11 +137,11 @@ def s3_to_clickhouse(ti):
                     new_rows[row_key] = list(row.values())
             data = list(new_rows.values())
             if table == 'fact_sales':
-                sale_id = client.query('SELECT coalesce(max(sale_id), 0) FROM fact_sales').result_rows[0][0]
+                sale_id = client.execute('SELECT coalesce(max(sale_id), 0) FROM fact_sales')[0][0]
                 data = [[sale_id + i, *row] for i, row in enumerate(data, 1)]
                 columns = ['sale_id', *columns]
             if data:
-                client.insert(table, data, column_names=columns)
+                client.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES", data)
             print(table, 'добавлено:', len(data))
     finally:
-        client.close()
+        client.disconnect()
