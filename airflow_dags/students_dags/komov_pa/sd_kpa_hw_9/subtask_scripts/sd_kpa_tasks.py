@@ -1,12 +1,9 @@
-import json
-import uuid
-import pika
-import pandas as pd
-import clickhouse_connect
-from airflow.models import Variable
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-
 def extract_rabbitmq_to_s3(**kwargs):
+    import json
+    import uuid
+    import pika
+    from airflow.models import Variable
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
     rmq_user = Variable.get('rabbit_mq_svc_login')
     rmq_pass = Variable.get('rabbit_mq_svc_password')
@@ -60,7 +57,15 @@ def extract_rabbitmq_to_s3(**kwargs):
     print(f"Загружено {len(messages)} сообщений в S3: {s3_key}")
     return s3_key
 
+
 def load_s3_to_clickhouse(**kwargs):
+  
+    import json
+    import pandas as pd
+    import clickhouse_connect
+    from airflow.models import Variable
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
     ti = kwargs['ti']
     s3_key = ti.xcom_pull(task_ids='extract_to_s3')
     if not s3_key: return
@@ -106,7 +111,6 @@ def load_s3_to_clickhouse(**kwargs):
     df_reason = df_reason[['reason_code', 'reason_group', 'is_company_fault']]
     df_reason.drop_duplicates(subset=['reason_code'], inplace=True)
     client.insert_df('komov_pa_sch_db.dim_return_reason', df_reason)
-
 
     df_fact = pd.DataFrame({
         'return_line_id': df.apply(lambda x: f"{x['return_id']}:{x['product_id']}", axis=1),

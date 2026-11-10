@@ -1,46 +1,30 @@
+import datetime
 import os
 import sys
-from datetime import datetime, timedelta
 from airflow import DAG
+from airflow.operators.python import PythonOperator
 
-from airflow.operators.python import PythonVirtualenvOperator
-from airflow.models import Variable
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'subtask_scripts'))
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-from subtask_scripts.sd_kpa_tasks import extract_rabbitmq_to_s3, load_s3_to_clickhouse
-
-default_args = {
-    'owner': 'komov_pa',
-    'start_date': datetime(2024, 1, 1),
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
+from sd_kpa_tasks import extract_rabbitmq_to_s3, load_s3_to_clickhouse
 
 with DAG(
     dag_id='sd_kpa_hw_9',
-    default_args=default_args,
-    schedule_interval=None,
+    default_args={'owner': 'komov_pa', 'retries': 0},
+    schedule=None,
+    start_date=datetime.datetime(2026, 1, 1),
     catchup=False,
-    tags=['komov_pa', 'hw_9']
+    tags=['komov_pa', 'hw_9'],
 ) as dag:
 
-
-    task_extract = PythonVirtualenvOperator(
+    task_extract = PythonOperator(
         task_id='extract_to_s3',
         python_callable=extract_rabbitmq_to_s3,
-        requirements=["pika", "pandas", "clickhouse-connect", "apache-airflow"],
-        system_site_packages=False,
     )
 
-
-    task_load = PythonVirtualenvOperator(
+    task_load = PythonOperator(
         task_id='load_to_clickhouse',
         python_callable=load_s3_to_clickhouse,
-        requirements=["pika", "pandas", "clickhouse-connect", "apache-airflow"],
-        system_site_packages=False,
     )
 
     task_extract >> task_load
