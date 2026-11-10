@@ -1,13 +1,14 @@
+import os
+import sys
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from subtask_scripts.sd_kpa_tasks import extract_rabbitmq_to_s3, load_s3_to_clickhouse
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
+
+from subtask_scripts.sd_kpa_tasks import extract_rabbitmq_to_s3, load_s3_to_clickhouse
 
 default_args = {
     'owner': 'komov_pa',
@@ -15,7 +16,6 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
-
 
 with DAG(
     dag_id='sd_kpa_hw_9',
