@@ -114,7 +114,7 @@ def s3_to_clickhouse():
     access_key = Variable.get('s3_dad_ksu_dataplatform_access_key')
     secret_key = Variable.get('s3_dad_ksu_dataplatform_secret_key')
     
-    clickhouse_host = Variable.get('clickhouse_port')
+    clickhouse_host = Variable.get('clickhouse_hort')
     clickhouse_svc_login = Variable.get('clickhouse_tech_user_account')
     clickhouse_svc_password = Variable.get('clickhouse_tech_user_password')
 
