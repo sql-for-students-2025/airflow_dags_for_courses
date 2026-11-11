@@ -95,7 +95,7 @@ def rabbitmq_to_s3():
     session = boto3.session.Session()
     s3_client = session.client(
         service_name='s3',
-        endpoint_url='https://yandexcloud.net',
+        endpoint_url='https://storage.yandexcloud.net',
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         verify=False
