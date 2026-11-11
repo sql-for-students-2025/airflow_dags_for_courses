@@ -133,4 +133,19 @@ def load_s3_to_clickhouse(**kwargs):
         'days_to_return': df['days_to_return'].astype('uint32')
     })
 
-    print(f"Успешно загружено {len(df)} строк в ClickHouse.")
+   with Client(
+        host=ch_host, 
+        user=ch_user, 
+        password=ch_pass, 
+        database='komov_pa_db',
+        settings={'use_numpy': True},
+        port=9000
+    ) as client:
+        
+        
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product VALUES', df_product)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store VALUES', df_store)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason VALUES', df_reason)
+        client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
+
+    print(f"Успешно загружено {len(df_fact)} строк в ClickHouse.")
