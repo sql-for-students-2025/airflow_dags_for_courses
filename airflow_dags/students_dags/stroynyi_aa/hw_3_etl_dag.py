@@ -1,8 +1,27 @@
-import sys, os
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+import sys
+import os
 from datetime import datetime, timedelta
+
+# --- Блок автоустановки библиотек для Airflow ---
+# Airflow на сервере может не иметь этих библиотек, поэтому мы их доустанавливаем
+def install_packages():
+    import subprocess
+    packages = ["pika", "clickhouse-driver", "boto3"]
+    for pkg in packages:
+        try:
+            __import__(pkg.replace("-", "_"))
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+
+install_packages()
+# ------------------------------------------------
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+
+# Добавляем путь к текущей папке, чтобы Airflow нашел папку subtask_scripts
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 from subtask_scripts.rabbit_consumer import consume_rabbitmq_to_file
 from subtask_scripts.s3_to_clickhouse import upload_to_s3, load_s3_to_clickhouse
 
