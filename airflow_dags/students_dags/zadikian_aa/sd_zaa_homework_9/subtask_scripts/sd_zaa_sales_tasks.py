@@ -10,7 +10,7 @@ def rabbitmq_to_s3(run_id):
     from airflow.models import Variable
 
     connection = pika.BlockingConnection(pika.ConnectionParameters(
-        host='rabbitmq.student.magnit.ru',
+        host=Variable.get('rabbit_mq_host'),
         port=5672,
         virtual_host='/',
         credentials=pika.PlainCredentials(
@@ -66,10 +66,10 @@ def s3_to_clickhouse(ti):
     if not key:
         return
     client = Client(
-        host=Variable.get('zadikian_aa_clickhouse_host', default_var='111.88.243.32'),
+        host=Variable.get('clickhouse_port'),
         port=9000,
-        user=Variable.get('zadikian_aa_clickhouse_login'),
-        password=Variable.get('zadikian_aa_clickhouse_password'),
+        user=Variable.get('clickhouse_tech_user_account'),
+        password=Variable.get('clickhouse_tech_user_password'),
         database='zadikian_aa_db',
     )
     try:
