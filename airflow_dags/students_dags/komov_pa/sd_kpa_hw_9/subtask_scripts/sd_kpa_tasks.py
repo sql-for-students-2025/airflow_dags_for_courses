@@ -5,12 +5,11 @@ import pandas as pd
 import boto3
 import urllib3
 from airflow.models import Variable
-import clickhouse_connect
+from clickhouse_driver import Client
 
 urllib3.disable_warnings()
 
 def extract_rabbitmq_to_s3(**kwargs):
-    
     rmq_host = Variable.get('rabbit_mq_host')
     rmq_user = Variable.get('rabbit_mq_svc_login')
     rmq_pass = Variable.get('rabbit_mq_svc_password')
@@ -20,7 +19,6 @@ def extract_rabbitmq_to_s3(**kwargs):
 
     queue_name = "returns.queue"
     
-   
     credentials = pika.PlainCredentials(rmq_user, rmq_pass)
     parameters = pika.ConnectionParameters(
         host=rmq_host, port=5672, virtual_host="/", credentials=credentials
@@ -33,7 +31,7 @@ def extract_rabbitmq_to_s3(**kwargs):
         method_frame, header_frame, body = channel.basic_get(queue=queue_name, auto_ack=False)
         if method_frame:
             messages.append(json.loads(body.decode('utf-8')))
-            channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+            channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
         else:
             break
     connection.close()
@@ -42,7 +40,6 @@ def extract_rabbitmq_to_s3(**kwargs):
         print("Очередь пуста")
         return None
 
-   
     file_name = f"returns_{uuid.uuid4().hex}.json"
     s3_key = f"DATA/komov_pa/{file_name}"
     local_path = f"/tmp/{file_name}"
@@ -59,7 +56,6 @@ def extract_rabbitmq_to_s3(**kwargs):
         verify=False
     )
     
-  
     s3_client.upload_file(local_path, 'dad-ksu-datalab', s3_key)
     print(f"Загружено {len(messages)} сообщений в S3: {s3_key}")
     
@@ -67,7 +63,6 @@ def extract_rabbitmq_to_s3(**kwargs):
 
 
 def load_s3_to_clickhouse(**kwargs):
-   
     access_key = Variable.get('s3_dad_ksu_dataplatform_access_key')
     secret_key = Variable.get('s3_dad_ksu_dataplatform_secret_key')
     
@@ -96,22 +91,13 @@ def load_s3_to_clickhouse(**kwargs):
 
     df = pd.DataFrame(data)
 
-    client = clickhouse_connect.get_client(
-        host=ch_host,
-        port=8123,
-        username=ch_user,
-        password=ch_pass
-    )
-
     df_product = df[['product_id', 'product_name', 'product_brand', 'product_category']].copy()
     df_product.columns = ['sku', 'product_name', 'brand', 'category']
     df_product.drop_duplicates(subset=['sku'], inplace=True)
-    client.insert_df('komov_pa_sch_db.dim_product', df_product)
 
     df_store = df[['store_id', 'store_name', 'store_city', 'store_region']].copy()
     df_store.columns = ['store_code', 'store_name', 'city', 'region']
     df_store.drop_duplicates(subset=['store_code'], inplace=True)
-    client.insert_df('komov_pa_sch_db.dim_store', df_store)
 
     df_reason = df[['reason_id', 'reason_name']].copy()
     df_reason.columns = ['reason_code', 'reason_name']
@@ -119,7 +105,6 @@ def load_s3_to_clickhouse(**kwargs):
     df_reason['is_company_fault'] = df_reason['reason_group'].apply(lambda x: 1 if x in ['логистика', 'брак'] else 0)
     df_reason = df_reason[['reason_code', 'reason_group', 'is_company_fault']]
     df_reason.drop_duplicates(subset=['reason_code'], inplace=True)
-    client.insert_df('komov_pa_sch_db.dim_return_reason', df_reason)
 
     df_fact = pd.DataFrame({
         'return_line_id': df.apply(lambda x: f"{x['return_id']}:{x['product_id']}", axis=1),
@@ -137,5 +122,19 @@ def load_s3_to_clickhouse(**kwargs):
         'writeoff_qty': df['writeoff_qty'].astype('uint32'),
         'days_to_return': df['days_to_return'].astype('uint32')
     })
-    client.insert_df('komov_pa_sch_db.fact_return_line', df_fact)
+
+    with Client(
+        host=ch_host, 
+        user=ch_user, 
+        password=ch_pass, 
+        database='komov_pa_sch_db',
+        settings={'use_numpy': True},
+        port=9000
+    ) as client:
+        
+        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_product VALUES', df_product)
+        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_store VALUES', df_store)
+        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_return_reason VALUES', df_reason)
+        client.insert_dataframe('INSERT INTO komov_pa_sch_db.fact_return_line VALUES', df_fact)
+
     print(f"Успешно загружено {len(df)} строк в ClickHouse.")
