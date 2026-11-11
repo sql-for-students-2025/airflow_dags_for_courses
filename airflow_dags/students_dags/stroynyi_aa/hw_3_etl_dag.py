@@ -32,13 +32,13 @@ default_args = {
 }
 
 with DAG(
-    dag_id="hw_3_etl_sales",
+    dag_id="sd_saa_homework_9",  # Переименовали в общий формат (saa - stroynyi_aa)
     description="RabbitMQ -> S3 -> ClickHouse",
     start_date=datetime(2025, 1, 1),
     schedule_interval=None,
     catchup=False,
     default_args=default_args,
-    tags=["stroinyi_aa", "hw_3", "etl", "sales"],
+    tags=["homework_9", "stroinyi_aa", "etl"], # Добавили обязательный тег homework_9
 ) as dag:
 
     t1 = PythonOperator(
