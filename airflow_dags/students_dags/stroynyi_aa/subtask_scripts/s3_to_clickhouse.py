@@ -4,7 +4,7 @@ import urllib3
 from airflow.models import Variable
 from clickhouse_driver import Client
 
-urllib3.disable_warnings() # Отключаем предупреждения, как в методичке
+urllib3.disable_warnings()
 
 S3_BUCKET = "dad-ksu-datalab"
 S3_ENDPOINT = "https://storage.yandexcloud.net"
@@ -30,7 +30,7 @@ def upload_to_s3(**context) -> str:
         endpoint_url=S3_ENDPOINT,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        verify=False  # ОБЯЗАТЕЛЬНО ДЛЯ YANDEX CLOUD
+        verify=False
     )
     s3.upload_file(local_file, S3_BUCKET, s3_key)
 
@@ -57,23 +57,24 @@ def load_s3_to_clickhouse(**context) -> None:
     tmp_path = f"/tmp/{MY_LOGIN}_batch.json"
     s3.download_file(S3_BUCKET, s3_key, tmp_path)
 
-    # Читаем как текст (utf-8), а не как байты!
     with open(tmp_path, "r", encoding="utf-8") as f:
-        raw = f.read()
+        # Разбиваем файл на строки, чтобы clickhouse-driver не путался
+        raw_lines = f.read().splitlines()
 
     with Client(
-        host=CH_HOST, # Используем IP из методички
+        host=CH_HOST,
         user=ch_user,
         password=ch_pass,
         database=f"{MY_LOGIN}_db",
         port=9000,
     ) as client:
-        # 1. Грузим в стейджинг
+        # 1. Грузим в стейджинг построчно
         client.execute(
             "INSERT INTO fact_orders_raw FORMAT JSONEachRow",
-            raw,
+            raw_lines, # Передаем список строк
         )
-        # 2. Перекладываем в витрину
+        
+        # 2. Перекладываем в витрину (этот запрос выполняется без передачи данных, тут всё ок)
         client.execute(
             """
             INSERT INTO fact_orders
