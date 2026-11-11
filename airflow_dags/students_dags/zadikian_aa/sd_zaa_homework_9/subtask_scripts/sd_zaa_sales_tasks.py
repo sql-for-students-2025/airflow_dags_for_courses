@@ -1,7 +1,4 @@
 import json
-import re
-from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
 def rabbitmq_to_s3(run_id):
@@ -66,82 +63,169 @@ def s3_to_clickhouse(ti):
     if not key:
         return
     client = Client(
-        host=Variable.get('clickhouse_port'),
+        host='111.88.243.32',
         port=9000,
         user=Variable.get('clickhouse_tech_user_account'),
         password=Variable.get('clickhouse_tech_user_password'),
         database='zadikian_aa_db',
     )
     try:
-        messages = client.execute(
-            "SELECT message FROM s3(s3_dad_ksu_datalab, filename=%(filename)s, "
-            "format='JSONEachRow', structure='message String')",
-            params={'filename': 'dad-ksu-datalab/' + key},
-        )
-        tables = {'dim_date': [], 'dim_store': [], 'dim_product': [], 'dim_customer': [], 'fact_sales': []}
-        sales = []
-        days = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
-
-        for (body,) in messages:
-            m = json.loads(body)
-            if m.get('event_type') != 'receipt_line':
-                continue
-            try:
-                date = datetime.fromisoformat(m['event_time'].replace('Z', '+00:00'))
-                quantity = int(m['quantity'])
-                if quantity < 0:
-                    raise ValueError('Отрицательное количество')
-                gross, discount, net, cost = [
-                    Decimal(str(m[field])).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                    for field in ('gross_amount', 'discount_amount', 'net_amount', 'cost_amount')
-                ]
-                price = (gross / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal(0)
-                if not all(value.is_finite() for value in (gross, discount, net, cost, price)):
-                    raise ValueError('Некорректная сумма')
-                store_id = int(re.sub(r'\D', '', str(m['store_id'] or '')))
-                product_id = int(re.sub(r'\D', '', str(m['product_id'] or '')))
-                customer_id = int(re.sub(r'\D', '', str(m.get('customer_id') or '')) or '0')
-            except (KeyError, ValueError, TypeError, InvalidOperation) as error:
-                print('Ошибка:', m.get('event_id'), error)
-                continue
-
-            date_id = int(date.strftime('%Y%m%d'))
-            city, region = m.get('store_city') or '', m.get('store_region') or ''
-            tables['dim_date'].append(dict(date_id=date_id, full_date=date.date(), year=date.year,
-                                          month=date.month, day=date.day, day_of_week=days[date.weekday()]))
-            tables['dim_store'].append(dict(store_id=store_id, store_name=m.get('store_name') or '',
-                                           address=', '.join(x for x in (city, region) if x), city=city, region=region))
-            tables['dim_product'].append(dict(product_id=product_id, name=m.get('product_name') or '',
-                                             category=m.get('product_category') or '', price=price))
-            tables['dim_customer'].append(dict(customer_id=customer_id, name='', email='', phone=''))
-            if m.get('receipt_status') != 'CANCELLED':
-                sales.append((date, dict(date_id=date_id, store_id=store_id, product_id=product_id,
-                                         customer_id=customer_id, quantity=quantity, gross_amount=gross,
-                                         discount_amount=discount, net_amount=net, margin_amount=net - cost)))
-
-        tables['fact_sales'] = [row for date, row in sorted(sales, key=lambda sale: sale[0])]
-        for table, rows in tables.items():
-            if not rows:
-                continue
-            columns = list(rows[0])
-            id_column = columns[0]
-            check_columns = columns if table == 'fact_sales' else [id_column]
-            existing = client.execute(
-                f"SELECT {', '.join(check_columns)} FROM {table} WHERE {id_column} IN %(ids)s",
-                params={'ids': tuple({row[id_column] for row in rows})},
+        parameters = {'filename': 'dad-ksu-datalab/' + key}
+        statements = (
+            """
+            INSERT INTO stg_sales (source_file, message)
+            SELECT DISTINCT %(filename)s, message
+            FROM s3(
+                s3_dad_ksu_datalab,
+                filename=%(filename)s,
+                format='JSONEachRow',
+                structure='message String'
             )
-            new_rows = {}
-            for row in rows:
-                row_key = tuple(row[column] for column in check_columns)
-                if row_key not in existing:
-                    new_rows[row_key] = list(row.values())
-            data = list(new_rows.values())
-            if table == 'fact_sales':
-                sale_id = client.execute('SELECT coalesce(max(sale_id), 0) FROM fact_sales')[0][0]
-                data = [[sale_id + i, *row] for i, row in enumerate(data, 1)]
-                columns = ['sale_id', *columns]
-            if data:
-                client.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES", data)
-            print(table, 'добавлено:', len(data))
+            WHERE message NOT IN
+            (
+                SELECT message FROM stg_sales WHERE source_file = %(filename)s
+            )
+            """,
+            """
+            CREATE TEMPORARY TABLE sales_batch ENGINE = Memory AS
+            SELECT
+                *,
+                toUInt32(toYYYYMMDD(event_time)) AS date_id,
+                ifNull(
+                    CAST(round(toDecimal128(gross_amount, 8) / nullIf(quantity, 0), 2) AS Nullable(Decimal(18, 2))),
+                    toDecimal64(0, 2)
+                ) AS price,
+                net_amount - cost_amount AS margin_amount
+            FROM
+            (
+                SELECT
+                    message,
+                    parseDateTime64BestEffortOrNull(
+                        JSONExtractString(message, 'event_time'), 6, 'UTC'
+                    ) AS event_time,
+                    JSONExtractString(message, 'receipt_status') AS receipt_status,
+                    toInt64OrNull(coalesce(
+                        nullIf(JSONExtractString(message, 'quantity'), ''),
+                        JSONExtractRaw(message, 'quantity')
+                    )) AS quantity,
+                    toUInt64OrNull(replaceRegexpAll(
+                        coalesce(nullIf(JSONExtractString(message, 'store_id'), ''),
+                                 JSONExtractRaw(message, 'store_id')), '[^0-9]', ''
+                    )) AS store_id,
+                    toUInt64OrNull(replaceRegexpAll(
+                        coalesce(nullIf(JSONExtractString(message, 'product_id'), ''),
+                                 JSONExtractRaw(message, 'product_id')), '[^0-9]', ''
+                    )) AS product_id,
+                    ifNull(toUInt64OrNull(replaceRegexpAll(
+                        coalesce(nullIf(JSONExtractString(message, 'customer_id'), ''),
+                                 JSONExtractRaw(message, 'customer_id')), '[^0-9]', ''
+                    )), toUInt64(0)) AS customer_id,
+                    JSONExtractString(message, 'store_name') AS store_name,
+                    JSONExtractString(message, 'store_city') AS city,
+                    JSONExtractString(message, 'store_region') AS region,
+                    JSONExtractString(message, 'product_name') AS product_name,
+                    JSONExtractString(message, 'product_category') AS category,
+                    CAST(round(toDecimal128OrNull(coalesce(
+                        nullIf(JSONExtractString(message, 'gross_amount'), ''),
+                        JSONExtractRaw(message, 'gross_amount')
+                    ), 8), 2) AS Nullable(Decimal(18, 2))) AS gross_amount,
+                    CAST(round(toDecimal128OrNull(coalesce(
+                        nullIf(JSONExtractString(message, 'discount_amount'), ''),
+                        JSONExtractRaw(message, 'discount_amount')
+                    ), 8), 2) AS Nullable(Decimal(18, 2))) AS discount_amount,
+                    CAST(round(toDecimal128OrNull(coalesce(
+                        nullIf(JSONExtractString(message, 'net_amount'), ''),
+                        JSONExtractRaw(message, 'net_amount')
+                    ), 8), 2) AS Nullable(Decimal(18, 2))) AS net_amount,
+                    CAST(round(toDecimal128OrNull(coalesce(
+                        nullIf(JSONExtractString(message, 'cost_amount'), ''),
+                        JSONExtractRaw(message, 'cost_amount')
+                    ), 8), 2) AS Nullable(Decimal(18, 2))) AS cost_amount
+                FROM stg_sales
+                WHERE source_file = %(filename)s
+                  AND isValidJSON(message)
+                  AND JSONExtractString(message, 'event_type') = 'receipt_line'
+            )
+            WHERE event_time IS NOT NULL
+              AND quantity IS NOT NULL AND quantity >= 0
+              AND store_id IS NOT NULL AND product_id IS NOT NULL
+              AND gross_amount IS NOT NULL AND discount_amount IS NOT NULL
+              AND net_amount IS NOT NULL AND cost_amount IS NOT NULL
+            """,
+            """
+            INSERT INTO dim_date (date_id, full_date, year, month, day, day_of_week)
+            SELECT DISTINCT
+                date_id, toDate(event_time), toYear(event_time), toMonth(event_time),
+                toDayOfMonth(event_time),
+                ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'][toDayOfWeek(event_time)]
+            FROM sales_batch
+            WHERE date_id NOT IN (SELECT date_id FROM dim_date)
+            """,
+            """
+            INSERT INTO dim_store (store_id, store_name, address, city, region)
+            SELECT store_id, attributes.1, attributes.2, attributes.3, attributes.4
+            FROM
+            (
+                SELECT store_id, argMax(
+                    tuple(store_name, arrayStringConcat(arrayFilter(x -> x != '', [city, region]), ', '), city, region),
+                    tuple(event_time, message)
+                ) AS attributes
+                FROM sales_batch
+                WHERE store_id NOT IN (SELECT store_id FROM dim_store)
+                GROUP BY store_id
+            )
+            """,
+            """
+            INSERT INTO dim_product (product_id, name, category, price)
+            SELECT product_id, attributes.1, attributes.2, attributes.3
+            FROM
+            (
+                SELECT product_id, argMax(tuple(product_name, category, price), tuple(event_time, message)) AS attributes
+                FROM sales_batch
+                WHERE product_id NOT IN (SELECT product_id FROM dim_product)
+                GROUP BY product_id
+            )
+            """,
+            """
+            INSERT INTO dim_customer (customer_id, name, email, phone)
+            SELECT DISTINCT customer_id, '', '', ''
+            FROM sales_batch
+            WHERE customer_id NOT IN (SELECT customer_id FROM dim_customer)
+            """,
+            """
+            CREATE TEMPORARY TABLE new_sales ENGINE = Memory AS
+            SELECT
+                date_id, store_id, product_id, customer_id, quantity,
+                gross_amount, discount_amount, net_amount, margin_amount,
+                min(event_time) AS event_time
+            FROM sales_batch
+            WHERE receipt_status != 'CANCELLED'
+              AND (date_id, store_id, product_id, customer_id, quantity,
+                   gross_amount, discount_amount, net_amount, margin_amount) NOT IN
+              (
+                  SELECT date_id, store_id, product_id, customer_id, quantity,
+                         gross_amount, discount_amount, net_amount, margin_amount
+                  FROM fact_sales
+              )
+            GROUP BY date_id, store_id, product_id, customer_id, quantity,
+                     gross_amount, discount_amount, net_amount, margin_amount
+            """,
+            """
+            INSERT INTO fact_sales
+                (sale_id, date_id, store_id, product_id, customer_id, quantity,
+                 gross_amount, discount_amount, net_amount, margin_amount)
+            SELECT
+                (SELECT coalesce(max(sale_id), 0) FROM fact_sales)
+                    + row_number() OVER (ORDER BY event_time, date_id, store_id, product_id,
+                                        customer_id, quantity, gross_amount, discount_amount,
+                                        net_amount, margin_amount),
+                date_id, store_id, product_id, customer_id, quantity,
+                gross_amount, discount_amount, net_amount, margin_amount
+            FROM new_sales
+            """,
+        )
+        for statement in statements:
+            client.execute(statement, params=parameters)
+        print('Загрузка из S3 в в стейдж завершена, ключ :', key)
     finally:
         client.disconnect()

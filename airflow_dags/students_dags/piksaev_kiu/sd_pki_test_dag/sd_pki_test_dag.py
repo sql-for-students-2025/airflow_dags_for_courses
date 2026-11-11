@@ -5,9 +5,9 @@ import sys
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtask_scripts"))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from sd_pki_test_task import task_from_folder, test_python
+from subtask_scripts import sd_pki_test_task
 
 default_args = {
     "owner": "piksaev_kiu",
@@ -31,20 +31,20 @@ with DAG(
 
     task_1 = PythonOperator(
         task_id="test_wo_arg",
-        python_callable=test_python,
+        python_callable=sd_pki_test_task.test_python,
         dag=dag,
     )
 
     task_2 = PythonOperator(
         task_id="test_with_arg",
-        python_callable=test_python,
+        python_callable=sd_pki_test_task.test_python,
         op_kwargs={"arg": "Unknown"},
         dag=dag,
     )
 
     task_3 = PythonOperator(
         task_id="test_from_subtask",
-        python_callable=task_from_folder,
+        python_callable=sd_pki_test_task.task_from_folder,
         dag=dag,
     )
 
