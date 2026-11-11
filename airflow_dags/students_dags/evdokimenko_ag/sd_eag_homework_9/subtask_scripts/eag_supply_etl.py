@@ -7,7 +7,7 @@ log = logging.getLogger(__name__)
 LOGIN = 'evdokimenko_ag'
 CH_DB = f'{LOGIN}_db'
 
-RABBIT_HOST = 'rabbitmq.student.magnit.ru'
+RABBIT_HOST_VAR = 'rabbit_mq_host'
 RABBIT_PORT = 5672
 RABBIT_VHOST = '/'
 QUEUE = 'supply.queue'
@@ -19,10 +19,11 @@ S3_BUCKET = 'dad-ksu-datalab'
 S3_PREFIX = f'DATA/{LOGIN}/supply'
 S3_NAMED_COLLECTION = 's3_dad_ksu_datalab'
 
-CH_URL = 'http://111.88.243.32:8123'
+CH_HOST_VAR = 'clickhouse_port'
+CH_PORT = 9000
 
-CH_LOGIN_VAR = 'clickhouse_svc_login'
-CH_PASSWORD_VAR = 'clickhouse_svc_password'
+CH_LOGIN_VAR = 'clickhouse_tech_user_account'
+CH_PASSWORD_VAR = 'clickhouse_tech_user_password'
 
 S3_FILE_STRUCTURE = (
     'event_id String, event_time DateTime, event_date Date, '
@@ -111,7 +112,7 @@ def _collect_messages():
 
     credentials = pika.PlainCredentials(_var('rabbit_mq_svc_login'), _var('rabbit_mq_svc_password'))
     params = pika.ConnectionParameters(
-        host=RABBIT_HOST, port=RABBIT_PORT, virtual_host=RABBIT_VHOST,
+        host=_var(RABBIT_HOST_VAR), port=RABBIT_PORT, virtual_host=RABBIT_VHOST,
         credentials=credentials, heartbeat=600, blocked_connection_timeout=300,
     )
     connection = pika.BlockingConnection(params)
@@ -182,17 +183,15 @@ def rabbit_to_s3(**context):
 
 
 def _ch(query):
-    import requests
-    resp = requests.post(
-        CH_URL,
-        params={'database': CH_DB},
-        data=query.encode('utf-8'),
-        auth=(_var(CH_LOGIN_VAR), _var(CH_PASSWORD_VAR)),
-        timeout=300,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f'ClickHouse вернул {resp.status_code}: {resp.text[:1000]}')
-    return resp.text
+    from clickhouse_driver.client import Client
+    with Client(
+        host=_var(CH_HOST_VAR),
+        user=_var(CH_LOGIN_VAR),
+        password=_var(CH_PASSWORD_VAR),
+        database=CH_DB,
+        port=CH_PORT,
+    ) as client:
+        return client.execute(query)
 
 
 def s3_to_clickhouse(**context):
@@ -214,7 +213,7 @@ def s3_to_clickhouse(**context):
         _ch(f"SELECT count() FROM {src_named}")
         src = src_named
         log.info('Читаем файл через именованную коллекцию %s', S3_NAMED_COLLECTION)
-    except RuntimeError as exc:
+    except Exception as exc:
         log.warning('Именованная коллекция недоступна (%s) — читаем по ключам', str(exc)[:200])
         src = src_keys
 
@@ -252,5 +251,5 @@ def s3_to_clickhouse(**context):
         _ch(sql)
         log.info('Загружено в %s.%s', CH_DB, table)
 
-    total = _ch(f"SELECT count() FROM {CH_DB}.fact_supply_line FINAL").strip()
+    total = _ch(f"SELECT count() FROM {CH_DB}.fact_supply_line FINAL")[0][0]
     log.info('Файл %s загружен (%s строк). Всего в fact_supply_line: %s', key, info['rows'], total)

@@ -1,16 +1,13 @@
-import datetime
-import os
-import sys
-
-import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+import datetime
+import sys, os
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-from subtask_scripts import eag_test_subtask
+from subtask_scripts import sd_iti_test_dag_tasks
 
 default_args = {
-    'owner': 'evdokimenko_ag',
+    'owner': 'ivanov_ti',
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
@@ -18,28 +15,37 @@ default_args = {
     'retry_delay': datetime.timedelta(minutes=1),
 }
 
+
+def test_python(arg='User'):
+    print(f'SUCCESS {arg}!!!')
+
+
 with DAG(
-    dag_id='sd_eag_test_dag',
+    dag_id="sd_iti_test_dag",
     default_args=default_args,
     schedule=None,
-    start_date=pendulum.datetime(2026, 11, 1, tz='Europe/Moscow'),
+    start_date=datetime.datetime(2026, 11, 1),
     catchup=False,
-    tags=['evdokimenko_ag', 'homework_9', 'test'],
+    tags=["ivanov_ti", "test", "Homework_9"],
 ) as dag:
+
     task_1 = PythonOperator(
         task_id='test_wo_arg',
-        python_callable=eag_test_subtask.say_hello,
+        python_callable=test_python,
+        dag=dag
     )
 
     task_2 = PythonOperator(
         task_id='test_with_arg',
-        python_callable=eag_test_subtask.say_hello,
-        op_kwargs={'arg': 'evdokimenko_ag'},
+        python_callable=test_python,
+        op_kwargs={'arg': 'Unknown'},
+        dag=dag
     )
 
     task_3 = PythonOperator(
         task_id='test_from_subtask',
-        python_callable=eag_test_subtask.task_from_folder,
+        python_callable=sd_iti_test_dag_tasks.task_from_folder,
+        dag=dag
     )
 
     task_1 >> task_2 >> task_3

@@ -2,12 +2,11 @@ import datetime
 import os
 import sys
 
-import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-from subtask_scripts import eag_supply_etl
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'subtask_scripts'))
+import eag_supply_etl
 
 default_args = {
     'owner': 'evdokimenko_ag',
@@ -23,7 +22,7 @@ with DAG(
     default_args=default_args,
     description='RabbitMQ supply.queue -> S3 -> ClickHouse (витрина поставок)',
     schedule=None,
-    start_date=pendulum.datetime(2026, 11, 1, tz='Europe/Moscow'),
+    start_date=datetime.datetime(2026, 11, 1),
     catchup=False,
     max_active_runs=1,
     tags=['evdokimenko_ag', 'homework_9'],
