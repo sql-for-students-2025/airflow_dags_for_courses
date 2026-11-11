@@ -19,7 +19,7 @@ S3_BUCKET = 'dad-ksu-datalab'
 S3_PREFIX = f'DATA/{LOGIN}/supply'
 S3_NAMED_COLLECTION = 's3_dad_ksu_datalab'
 
-CH_HOST_VAR = 'clickhouse_port'
+CH_HOST_VAR = 'clickhouse_host'
 CH_PORT = 9000
 
 CH_LOGIN_VAR = 'clickhouse_tech_user_account'
