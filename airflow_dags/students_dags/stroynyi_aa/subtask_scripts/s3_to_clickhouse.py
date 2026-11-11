@@ -58,8 +58,7 @@ def load_s3_to_clickhouse(**context) -> None:
     s3.download_file(S3_BUCKET, s3_key, tmp_path)
 
     with open(tmp_path, "r", encoding="utf-8") as f:
-        # Разбиваем файл на строки, чтобы clickhouse-driver не путался
-        raw_lines = f.read().splitlines()
+        raw_text = f.read()
 
     with Client(
         host=CH_HOST,
@@ -68,13 +67,14 @@ def load_s3_to_clickhouse(**context) -> None:
         database=f"{MY_LOGIN}_db",
         port=9000,
     ) as client:
-        # 1. Грузим в стейджинг построчно
-        client.execute(
-            "INSERT INTO fact_orders_raw FORMAT JSONEachRow",
-            raw_lines, # Передаем список строк
-        )
+        # 1. Грузим в стейджинг.
+        # Используем f-строку и передаем данные через f-string, 
+        # чтобы драйвер не пытался их парсить как параметры.
+        # Это самый надежный способ для JSONEachRow.
+        insert_query = f"INSERT INTO fact_orders_raw FORMAT JSONEachRow\n{raw_text}"
+        client.execute(insert_query)
         
-        # 2. Перекладываем в витрину (этот запрос выполняется без передачи данных, тут всё ок)
+        # 2. Перекладываем в витрину
         client.execute(
             """
             INSERT INTO fact_orders
