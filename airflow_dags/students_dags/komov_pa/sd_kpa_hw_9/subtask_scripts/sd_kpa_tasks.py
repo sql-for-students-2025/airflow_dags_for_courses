@@ -117,8 +117,8 @@ def load_s3_to_clickhouse(**kwargs):
         'reason_code': df['reason_id'],
         'channel_name': df['channel_name'],
         'returned_qty': df['returned_qty'].astype('uint32'),
-        'refund_amount': df['refund_amount'].astype(float),
-        'returned_cost': df['returned_cost'].astype(float),
+        'refund_amount': df['refund_amount'].apply(lambda x: str(x) if pd.notnull(x) else '0.00'),
+        'returned_cost': df['returned_cost'].apply(lambda x: str(x) if pd.notnull(x) else '0.00'),
         'writeoff_qty': df['writeoff_qty'].astype('uint32'),
         'days_to_return': df['days_to_return'].astype('uint32')
     })
