@@ -66,7 +66,7 @@ def s3_to_clickhouse(ti):
     if not key:
         return
     client = Client(
-        host=Variable.get('clickhouse_port'),
+        host='111.88.243.32',
         port=9000,
         user=Variable.get('clickhouse_tech_user_account'),
         password=Variable.get('clickhouse_tech_user_password'),
