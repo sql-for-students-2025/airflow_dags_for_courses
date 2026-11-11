@@ -7,13 +7,12 @@ from airflow.operators.python import PythonOperator
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtask_scripts"))
 
-from sd_pki_test_task import task_from_folder
+from sd_pki_test_task import task_from_folder, test_python
 
 default_args = {
     "owner": "piksaev_kiu",
     "depends_on_past": False,
     "start_date": datetime.datetime(2020, 7, 1, 0, 0),
-    "email": ["piksaev_kiu@example.com"],
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 0,
@@ -21,15 +20,9 @@ default_args = {
     "pool": "default",
 }
 
-
-def test_python(arg="User"):
-    print(f"SUCCESS {arg}!!!")
-
-
 with DAG(
     dag_id="sd_pki_test_dag",
     default_args=default_args,
-    description="Тестовый DAG для ДЗ №9",
     schedule=None,
     start_date=datetime.datetime(2020, 7, 1, 0, 0),
     catchup=False,

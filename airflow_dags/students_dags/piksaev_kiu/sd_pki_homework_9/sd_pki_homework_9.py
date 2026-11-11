@@ -14,7 +14,6 @@ default_args = {
     "owner": "piksaev_kiu",
     "depends_on_past": False,
     "start_date": datetime.datetime(2020, 7, 1, 0, 0),
-    "email": ["piksaev_kiu@example.com"],
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 0,
@@ -25,7 +24,6 @@ default_args = {
 with DAG(
     dag_id="sd_pki_homework_9",
     default_args=default_args,
-    description="RabbitMQ -> S3 -> ClickHouse (HW9)",
     schedule=None,
     start_date=datetime.datetime(2020, 7, 1, 0, 0),
     catchup=False,
