@@ -38,7 +38,7 @@ def _rabbit_connection():
     )
     return pika.BlockingConnection(
         pika.ConnectionParameters(
-            host=RABBITMQ_HOST,
+            host=Variable.get("rabbit_mq_host", default_var=RABBITMQ_HOST),
             port=RABBITMQ_PORT,
             virtual_host=RABBITMQ_VHOST,
             credentials=credentials,
