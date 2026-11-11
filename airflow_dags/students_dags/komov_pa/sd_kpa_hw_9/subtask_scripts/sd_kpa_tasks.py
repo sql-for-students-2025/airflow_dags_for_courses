@@ -133,7 +133,7 @@ def load_s3_to_clickhouse(**kwargs):
         'days_to_return': df['days_to_return'].astype('uint32')
     })
 
-   with Client(
+    with Client(
         host=ch_host, 
         user=ch_user, 
         password=ch_pass, 
@@ -141,7 +141,6 @@ def load_s3_to_clickhouse(**kwargs):
         settings={'use_numpy': True},
         port=9000
     ) as client:
-        
         
         client.insert_dataframe('INSERT INTO komov_pa_db.dim_product VALUES', df_product)
         client.insert_dataframe('INSERT INTO komov_pa_db.dim_store VALUES', df_store)
