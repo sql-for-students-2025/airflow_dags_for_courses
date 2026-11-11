@@ -5,7 +5,7 @@ import sys
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'subtask_scripts'))
+sys.path.insert(0, '/opt/airflow/dags/repo/airflow_dags/students_dags/kochetkova_miu/sd_kmiu_test_dag/subtask_scripts')
 from sd_kmiu_test_tasks import test_success, task_from_folder
 
 
