@@ -27,14 +27,15 @@ def extract_rabbitmq_to_s3(**kwargs):
     channel = connection.channel()
     
     messages = []
+    delivery_tags = []
+    
     for _ in range(100):
         method_frame, header_frame, body = channel.basic_get(queue=queue_name, auto_ack=False)
         if method_frame:
             messages.append(json.loads(body.decode('utf-8')))
-            channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=True)
+            delivery_tags.append(method_frame.delivery_tag)
         else:
             break
-    connection.close()
 
     if not messages:
         print("Очередь пуста")
@@ -59,6 +60,15 @@ def extract_rabbitmq_to_s3(**kwargs):
     s3_client.upload_file(local_path, 'dad-ksu-datalab', s3_key)
     print(f"Загружено {len(messages)} сообщений в S3: {s3_key}")
     
+    try:
+        for tag in delivery_tags:
+            channel.basic_nack(delivery_tag=tag, requeue=True)
+        print(f"Возвращено в очередь: {len(delivery_tags)} сообщений")
+    except Exception as e:
+        print(f"Ошибка при возврате в очередь: {e}")
+    finally:
+        connection.close()
+
     return s3_key
 
 
@@ -122,19 +132,5 @@ def load_s3_to_clickhouse(**kwargs):
         'writeoff_qty': df['writeoff_qty'].astype('uint32'),
         'days_to_return': df['days_to_return'].astype('uint32')
     })
-
-    with Client(
-        host=ch_host, 
-        user=ch_user, 
-        password=ch_pass, 
-        database='komov_pa_db',
-        settings={'use_numpy': True},
-        port=9000
-    ) as client:
-        
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product VALUES', df_product)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store VALUES', df_store)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason VALUES', df_reason)
-        client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
 
     print(f"Успешно загружено {len(df)} строк в ClickHouse.")
