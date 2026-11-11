@@ -1,3 +1,5 @@
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
