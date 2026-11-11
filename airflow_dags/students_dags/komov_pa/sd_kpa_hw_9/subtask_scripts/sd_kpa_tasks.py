@@ -127,14 +127,14 @@ def load_s3_to_clickhouse(**kwargs):
         host=ch_host, 
         user=ch_user, 
         password=ch_pass, 
-        database='komov_pa_sch_db',
+        database='komov_pa_db',
         settings={'use_numpy': True},
         port=9000
     ) as client:
         
-        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_product VALUES', df_product)
-        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_store VALUES', df_store)
-        client.insert_dataframe('INSERT INTO komov_pa_sch_db.dim_return_reason VALUES', df_reason)
-        client.insert_dataframe('INSERT INTO komov_pa_sch_db.fact_return_line VALUES', df_fact)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product VALUES', df_product)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store VALUES', df_store)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason VALUES', df_reason)
+        client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
 
     print(f"Успешно загружено {len(df)} строк в ClickHouse.")
