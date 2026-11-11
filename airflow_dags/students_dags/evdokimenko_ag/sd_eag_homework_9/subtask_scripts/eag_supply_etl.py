@@ -173,7 +173,7 @@ def rabbit_to_s3(**context):
         raise ValueError('Ни одно сообщение не прошло разбор')
 
     run_ts = datetime.now(timezone.utc)
-    key = (f"{S3_PREFIX}/load_date={run_ts:%Y-%m-%d}/"
+    key = (f"{S3_PREFIX}/{run_ts:%Y-%m-%d}/"
            f"supply_{run_ts:%Y%m%dT%H%M%S}_{context['run_id'].replace(':', '-').replace('+', '-')}.json")
     body = '\n'.join(json.dumps(r, ensure_ascii=False) for r in rows).encode('utf-8')
 
