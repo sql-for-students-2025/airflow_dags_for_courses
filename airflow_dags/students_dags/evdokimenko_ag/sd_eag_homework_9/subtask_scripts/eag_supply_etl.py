@@ -201,7 +201,6 @@ def s3_to_clickhouse(**context):
         raise AirflowSkipException('Нет нового файла в S3')
     key = info['s3_key']
 
-
     src_named = (f"s3({S3_NAMED_COLLECTION}, filename='{S3_BUCKET}/{key}', "
                  f"format='JSONEachRow', structure='{S3_FILE_STRUCTURE}')")
 
@@ -223,19 +222,26 @@ def s3_to_clickhouse(**context):
             SELECT DISTINCT toUInt32(toYYYYMMDD(event_date)), event_date,
                    toYear(event_date), toMonth(event_date),
                    toDayOfMonth(event_date), toDayOfWeek(event_date)
-            FROM {src}""",
+            FROM {src}
+            WHERE toUInt32(toYYYYMMDD(event_date)) NOT IN (SELECT date_key FROM {CH_DB}.dim_date)""",
         'dim_supplier': f"""
             INSERT INTO {CH_DB}.dim_supplier (supplier_id, supplier_name, supplier_country)
             SELECT supplier_id, any(supplier_name), any(supplier_country)
-            FROM {src} GROUP BY supplier_id""",
+            FROM {src}
+            WHERE supplier_id NOT IN (SELECT supplier_id FROM {CH_DB}.dim_supplier)
+            GROUP BY supplier_id""",
         'dim_product': f"""
             INSERT INTO {CH_DB}.dim_product (product_id, product_name, product_category, product_brand)
             SELECT product_id, any(product_name), any(product_category), any(product_brand)
-            FROM {src} GROUP BY product_id""",
+            FROM {src}
+            WHERE product_id NOT IN (SELECT product_id FROM {CH_DB}.dim_product)
+            GROUP BY product_id""",
         'dim_warehouse': f"""
             INSERT INTO {CH_DB}.dim_warehouse (warehouse_id, warehouse_name, warehouse_region)
             SELECT warehouse_id, any(warehouse_name), any(warehouse_region)
-            FROM {src} GROUP BY warehouse_id""",
+            FROM {src}
+            WHERE warehouse_id NOT IN (SELECT warehouse_id FROM {CH_DB}.dim_warehouse)
+            GROUP BY warehouse_id""",
         'fact_supply_line': f"""
             INSERT INTO {CH_DB}.fact_supply_line
                 (event_id, event_time, date_key, supply_id, supply_line_id,
@@ -245,7 +251,8 @@ def s3_to_clickhouse(**context):
                    supplier_id, product_id, warehouse_id,
                    ordered_qty, received_qty, rejected_qty, received_amount, delay_days,
                    '{key}'
-            FROM {src}""",
+            FROM {src}
+            WHERE event_id NOT IN (SELECT event_id FROM {CH_DB}.fact_supply_line)""",
     }
     for table, sql in steps.items():
         _ch(sql)
