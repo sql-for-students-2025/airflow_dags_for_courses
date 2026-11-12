@@ -185,12 +185,12 @@ def s3_to_clickhouse(ti):
             client.execute(
                 sql + " settings input_format_skip_unknown_fields = 1", params
             )
-            client.execute('exchange tables dim_date_change and dim_date')
-            client.execute('truncate table dim_date_change')
-            client.execute('exchange tables dim_product_change and dim_product')
-            client.execute('truncate table dim_product_change')
-            client.execute('exchange tables dim_location_change and dim_location')
-            client.execute('truncate table dim_location_change')
+            client.execute(f'exchange tables {table}_change and {table}')
+            client.execute(f'truncate table {table}_change')
+            client.execute(f'exchange tables {table}_change and {table}')
+            client.execute(f'truncate table {table}_change')
+            client.execute(f'exchange tables {table}_change and {table}')
+            client.execute(f'truncate table {table}_change')
             
             count = client.execute(
                 f"select count() from {CLICKHOUSE_DB}.{table} final"
