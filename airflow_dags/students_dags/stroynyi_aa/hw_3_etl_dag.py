@@ -3,7 +3,8 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.providers.standard.operators.python import PythonOperator
+# ВОТ ПРАВИЛЬНЫЙ ИМПОРТ ДЛЯ AIRFLOW 2.x
+from airflow.operators.python import PythonOperator
 
 # Добавляем путь к текущей папке, чтобы Airflow нашел папку subtask_scripts
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
