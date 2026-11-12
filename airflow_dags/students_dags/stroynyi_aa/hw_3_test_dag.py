@@ -22,10 +22,10 @@ def _test_s3():
     )
 
 with DAG(
-    dag_id="hw_3_test_s3",
+    dag_id="sd_saa_test_dag", # Переименовали
     start_date=datetime(2025, 1, 1),
     schedule_interval=None,
     catchup=False,
-    tags=["stroinyi_aa", "hw_3", "test"],
+    tags=["homework_9", "stroinyi_aa", "test"], # Обновили теги
 ) as dag:
     PythonOperator(task_id="test_s3", python_callable=_test_s3)
