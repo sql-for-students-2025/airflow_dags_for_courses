@@ -146,15 +146,15 @@ def load_s3_to_clickhouse(**kwargs):
         client.insert_dataframe('INSERT INTO komov_pa_db.dim_product_stage VALUES', df_product)
         client.insert_dataframe('INSERT INTO komov_pa_db.dim_store_stage VALUES', df_store)
         client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason_stage VALUES', df_reason)
-    
+
         client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
 
-        client.execute('INSERT INTO komov_pa_db.dim_product SELECT * FROM komov_pa_db.dim_product_stage')
-        client.execute('INSERT INTO komov_pa_db.dim_store SELECT * FROM komov_pa_db.dim_store_stage')
-        client.execute('INSERT INTO komov_pa_db.dim_return_reason SELECT * FROM komov_pa_db.dim_return_reason_stage')
+        client.execute('EXCHANGE TABLES komov_pa_db.dim_product AND komov_pa_db.dim_product_stage')
+        client.execute('EXCHANGE TABLES komov_pa_db.dim_store AND komov_pa_db.dim_store_stage')
+        client.execute('EXCHANGE TABLES komov_pa_db.dim_return_reason AND komov_pa_db.dim_return_reason_stage')
 
         client.execute('TRUNCATE TABLE komov_pa_db.dim_product_stage')
         client.execute('TRUNCATE TABLE komov_pa_db.dim_store_stage')
         client.execute('TRUNCATE TABLE komov_pa_db.dim_return_reason_stage')
 
-    print(f"Успешно загружено {len(df_fact)} строк в ClickHouse (через Stage слой).")
+    print(f"Успешно загружено {len(df_fact)} строк. Справочники обновлены через EXCHANGE.")
