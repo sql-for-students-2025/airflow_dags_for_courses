@@ -143,18 +143,23 @@ def load_s3_to_clickhouse(**kwargs):
         port=9000
     ) as client:
         
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product_stage VALUES', df_product)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store_stage VALUES', df_store)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason_stage VALUES', df_reason)
-
         client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
 
-        client.execute('EXCHANGE TABLES komov_pa_db.dim_product AND komov_pa_db.dim_product_stage')
-        client.execute('EXCHANGE TABLES komov_pa_db.dim_store AND komov_pa_db.dim_store_stage')
-        client.execute('EXCHANGE TABLES komov_pa_db.dim_return_reason AND komov_pa_db.dim_return_reason_stage')
+        dim_tables = [
+            ("dim_product", df_product),
+            ("dim_store", df_store),
+            ("dim_return_reason", df_reason)
+        ]
 
-        client.execute('TRUNCATE TABLE komov_pa_db.dim_product_stage')
-        client.execute('TRUNCATE TABLE komov_pa_db.dim_store_stage')
-        client.execute('TRUNCATE TABLE komov_pa_db.dim_return_reason_stage')
+        for table_name, df_data in dim_tables:
+            
+            insert_stage_query = f'INSERT INTO komov_pa_db.{table_name}_stage VALUES'
+            client.insert_dataframe(insert_stage_query, df_data)
+            
+            exchange_query = f'EXCHANGE TABLES komov_pa_db.{table_name} AND komov_pa_db.{table_name}_stage'
+            client.execute(exchange_query)
+            
+            truncate_query = f'TRUNCATE TABLE komov_pa_db.{table_name}_stage'
+            client.execute(truncate_query)
 
-    print(f"Успешно загружено {len(df_fact)} строк. Справочники обновлены через EXCHANGE.")
+    print(f"Успешно загружено {len(df_fact)} строк. {len(dim_tables)} справочника обновлены через EXCHANGE.")
