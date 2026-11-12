@@ -187,10 +187,6 @@ def s3_to_clickhouse(ti):
             )
             client.execute(f'exchange tables {table}_change and {table}')
             client.execute(f'truncate table {table}_change')
-            client.execute(f'exchange tables {table}_change and {table}')
-            client.execute(f'truncate table {table}_change')
-            client.execute(f'exchange tables {table}_change and {table}')
-            client.execute(f'truncate table {table}_change')
             
             count = client.execute(
                 f"select count() from {CLICKHOUSE_DB}.{table} final"
