@@ -126,13 +126,17 @@ def s3_to_clickhouse(ti):
 
     queries = {
         "dim_date": f"""
-            insert into {CLICKHOUSE_DB}.dim_date (date_key, full_date)
+            insert into {CLICKHOUSE_DB}.dim_date_change (date_key, full_date)
+            exchange tables dim_date_change and dim_date
+            truncate table dim_date_change
             select distinct toYYYYMMDD(snapshot_date), snapshot_date
             from {source}
         """,
         "dim_product": f"""
-            insert into {CLICKHOUSE_DB}.dim_product
+            insert into {CLICKHOUSE_DB}.dim_product_change
                 (sku, product_name, brand, category, subcategory, supplier)
+            exchange tables dim_product_change and dim_product
+            truncate table dim_product_change
             select
                 product_id,
                 any(product_name),
@@ -144,8 +148,10 @@ def s3_to_clickhouse(ti):
             group by product_id
         """,
         "dim_location": f"""
-            insert into {CLICKHOUSE_DB}.dim_location
+            insert into {CLICKHOUSE_DB}.dim_location_change
                 (location_code, location_type, city, region)
+            exchange tables dim_location_change and dim_location
+            truncate table dim_location_change
             select
                 warehouse_id,
                 'warehouse',
