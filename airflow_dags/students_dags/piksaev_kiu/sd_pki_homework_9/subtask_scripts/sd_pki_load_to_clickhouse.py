@@ -1,10 +1,3 @@
-CH_HOST = "111.88.243.32"
-CH_PORT = 9000
-CH_DB = "piksaev_kiu_db"
-
-CH_LOGIN_VAR = "clickhouse_tech_user_account"
-CH_PASSWORD_VAR = "clickhouse_tech_user_password"
-
 S3_COLLECTION = "s3_dad_ksu_datalab"
 S3_FILENAME = "dad-ksu-datalab/DATA/piksaev_kiu/*.jsonl"
 
@@ -160,19 +153,6 @@ LEFT JOIN piksaev_kiu_db.dim_status AS st ON toString(st.status_name) = s.receip
 """
 
 
-def _ch_client():
-    from airflow.models import Variable
-    from clickhouse_driver.client import Client
-
-    return Client(
-        host=Variable.get("clickhouse_host", default_var=CH_HOST),
-        port=CH_PORT,
-        user=Variable.get(CH_LOGIN_VAR),
-        password=Variable.get(CH_PASSWORD_VAR),
-        database=CH_DB,
-    )
-
-
 def rebuild_dimensions_and_fact(client):
     for statement in SQL_TRUNCATE_TARGETS:
         client.execute(statement)
@@ -182,7 +162,20 @@ def rebuild_dimensions_and_fact(client):
 
 
 def load_s3_to_clickhouse(**context):
-    with _ch_client() as client:
+    from airflow.models import Variable
+    from clickhouse_driver.client import Client
+
+    clickhouse_svc_login = Variable.get("clickhouse_tech_user_account")
+    clickhouse_svc_password = Variable.get("clickhouse_tech_user_password")
+    clickhouse_host = Variable.get("clickhouse_host", default_var="111.88.243.32")
+
+    with Client(
+        host=clickhouse_host,
+        user=clickhouse_svc_login,
+        password=clickhouse_svc_password,
+        database="piksaev_kiu_db",
+        port=9000,
+    ) as client:
         client.execute(SQL_TRUNCATE_STG)
         client.execute(SQL_LOAD_STG)
 
