@@ -2,22 +2,8 @@ import sys
 import os
 from datetime import datetime, timedelta
 
-# --- Блок автоустановки библиотек для Airflow ---
-# Airflow на сервере может не иметь этих библиотек, поэтому мы их доустанавливаем
-def install_packages():
-    import subprocess
-    packages = ["pika", "clickhouse-driver", "boto3"]
-    for pkg in packages:
-        try:
-            __import__(pkg.replace("-", "_"))
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-
-install_packages()
-# ------------------------------------------------
-
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 # Добавляем путь к текущей папке, чтобы Airflow нашел папку subtask_scripts
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -32,13 +18,13 @@ default_args = {
 }
 
 with DAG(
-    dag_id="sd_saa_homework_9",  # Переименовали в общий формат (saa - stroynyi_aa)
+    dag_id="sd_saa_homework_9",
     description="RabbitMQ -> S3 -> ClickHouse",
     start_date=datetime(2025, 1, 1),
     schedule_interval=None,
     catchup=False,
     default_args=default_args,
-    tags=["homework_9", "stroinyi_aa", "etl"], # Добавили обязательный тег homework_9
+    tags=["homework_9", "stroinyi_aa", "etl"],
 ) as dag:
 
     t1 = PythonOperator(
