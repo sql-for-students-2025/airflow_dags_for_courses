@@ -133,6 +133,7 @@ def load_s3_to_clickhouse(**kwargs):
         'days_to_return': df['days_to_return'].astype('uint32')
     })
 
+   
     with Client(
         host=ch_host, 
         user=ch_user, 
@@ -142,9 +143,18 @@ def load_s3_to_clickhouse(**kwargs):
         port=9000
     ) as client:
         
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product VALUES', df_product)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store VALUES', df_store)
-        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason VALUES', df_reason)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_product_stage VALUES', df_product)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_store_stage VALUES', df_store)
+        client.insert_dataframe('INSERT INTO komov_pa_db.dim_return_reason_stage VALUES', df_reason)
+    
         client.insert_dataframe('INSERT INTO komov_pa_db.fact_return_line VALUES', df_fact)
 
-    print(f"Успешно загружено {len(df_fact)} строк в ClickHouse.")
+        client.execute('INSERT INTO komov_pa_db.dim_product SELECT * FROM komov_pa_db.dim_product_stage')
+        client.execute('INSERT INTO komov_pa_db.dim_store SELECT * FROM komov_pa_db.dim_store_stage')
+        client.execute('INSERT INTO komov_pa_db.dim_return_reason SELECT * FROM komov_pa_db.dim_return_reason_stage')
+
+        client.execute('TRUNCATE TABLE komov_pa_db.dim_product_stage')
+        client.execute('TRUNCATE TABLE komov_pa_db.dim_store_stage')
+        client.execute('TRUNCATE TABLE komov_pa_db.dim_return_reason_stage')
+
+    print(f"Успешно загружено {len(df_fact)} строк в ClickHouse (через Stage слой).")
