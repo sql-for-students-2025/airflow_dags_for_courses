@@ -169,8 +169,9 @@ def _ch_query(sql):
 
     login = Variable.get(CH_LOGIN_VAR)
     password = Variable.get(CH_PASSWORD_VAR)
+    host = Variable.get("clickhouse_host", default_var=CH_HOST)
 
-    url = f"http://{CH_HOST}:{CH_PORT}/?database={urllib.parse.quote(CH_DB)}"
+    url = f"http://{host}:{CH_PORT}/?database={urllib.parse.quote(CH_DB)}"
     req = urllib.request.Request(url, data=sql.encode("utf-8"), method="POST")
     req.add_header("X-ClickHouse-User", login)
     req.add_header("X-ClickHouse-Key", password)

@@ -5,10 +5,9 @@ import sys
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtask_scripts"))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from sd_pki_extract_to_s3 import extract_rabbitmq_to_s3
-from sd_pki_load_to_clickhouse import load_s3_to_clickhouse
+from subtask_scripts import sd_pki_extract_to_s3, sd_pki_load_to_clickhouse
 
 default_args = {
     "owner": "piksaev_kiu",
@@ -32,13 +31,13 @@ with DAG(
 
     task_extract = PythonOperator(
         task_id="extract_rabbitmq_to_s3",
-        python_callable=extract_rabbitmq_to_s3,
+        python_callable=sd_pki_extract_to_s3.extract_rabbitmq_to_s3,
         dag=dag,
     )
 
     task_load = PythonOperator(
         task_id="load_s3_to_clickhouse",
-        python_callable=load_s3_to_clickhouse,
+        python_callable=sd_pki_load_to_clickhouse.load_s3_to_clickhouse,
         dag=dag,
     )
 
