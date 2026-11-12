@@ -92,6 +92,10 @@ DDL = [
     ORDER BY (movement_date_key, location_key, product_key, document_id)""",
 ]
 
+DIMENSIONS = ["dim_date", "dim_product", "dim_location", "dim_movement_type", "dim_supplier"]
+
+DDL += [f"CREATE TABLE IF NOT EXISTS {dim}_stage AS {dim}" for dim in DIMENSIONS]
+
 S3_STRUCTURE = ", ".join(f"{name} {kind}" for name, kind in STG_COLUMNS)
 
 LOAD_STG = f"""
@@ -140,18 +144,9 @@ MOVEMENT_GROUP = """multiIf(
     positionCaseInsensitiveUTF8(movement_type, 'инвент') > 0, 'ADJUSTMENT',
     'OTHER')"""
 
-TRUNCATE_MART = [
-    "TRUNCATE TABLE dim_date",
-    "TRUNCATE TABLE dim_product",
-    "TRUNCATE TABLE dim_location",
-    "TRUNCATE TABLE dim_movement_type",
-    "TRUNCATE TABLE dim_supplier",
-    "TRUNCATE TABLE fact_inventory_movement",
-]
-
-BUILD_MART = [
-    f"""
-    INSERT INTO dim_date
+DIM_BUILD = {
+    "dim_date": f"""
+    INSERT INTO dim_date_stage
     SELECT
         toUInt32(formatDateTime(d, '%Y%m%d')),
         d,
@@ -162,8 +157,8 @@ BUILD_MART = [
         toYear(d)
     FROM (SELECT DISTINCT toDate(parseDateTime64BestEffort(event_time, 6, 'UTC')) AS d FROM {SOURCE})
     """,
-    f"""
-    INSERT INTO dim_product
+    "dim_product": f"""
+    INSERT INTO dim_product_stage
     SELECT
         {PRODUCT_KEY},
         product_id,
@@ -173,8 +168,8 @@ BUILD_MART = [
     FROM {SOURCE}
     GROUP BY product_id
     """,
-    f"""
-    INSERT INTO dim_location
+    "dim_location": f"""
+    INSERT INTO dim_location_stage
     SELECT 0, 'EXTERNAL', 'external', 'Внешняя локация (поставщик / покупатель)', ''
     UNION ALL
     SELECT
@@ -200,10 +195,12 @@ BUILD_MART = [
     )
     GROUP BY location_id
     """,
-    "INSERT INTO dim_movement_type VALUES "
+    "dim_movement_type": "INSERT INTO dim_movement_type_stage VALUES "
     + ", ".join(f"({k}, '{code}', '{group}', {sign}, {internal})" for k, code, group, sign, internal in MOVEMENT_TYPES),
-    "INSERT INTO dim_supplier VALUES (0, 'N/A', 'Не применимо', '', '')",
-    f"""
+    "dim_supplier": "INSERT INTO dim_supplier_stage VALUES (0, 'N/A', 'Не применимо', '', '')",
+}
+
+FACT_BUILD = f"""
     INSERT INTO fact_inventory_movement
     SELECT
         f.movement_date_key,
@@ -257,8 +254,7 @@ BUILD_MART = [
         ) AS side
     ) AS f
     INNER JOIN dim_movement_type AS mt ON mt.type_code = f.type_code
-    """,
-]
+    """
 
 CHECKS = {
     "строк в stg / уникальных событий": "SELECT count(), uniqExact(event_id) FROM stg_movement",
@@ -366,10 +362,17 @@ def s3_to_clickhouse(**context):
             print("Файлов в S3 нет, справочники и факт не трогаем")
             return
 
-        for statement in TRUNCATE_MART:
-            client.execute(statement)
-        for statement in BUILD_MART:
-            client.execute(statement)
+        for dim in DIMENSIONS:
+            stage = f"{dim}_stage"
+            client.execute(f"TRUNCATE TABLE {stage}")
+            client.execute(DIM_BUILD[dim])
+            client.execute(f"EXCHANGE TABLES {dim} AND {stage}")
+            client.execute(f"TRUNCATE TABLE {stage}")
+            rows = client.execute(f"SELECT count() FROM {dim}")[0][0]
+            print(f"{dim}: {rows} строк, подменён через EXCHANGE TABLES с {stage}")
+
+        client.execute("TRUNCATE TABLE fact_inventory_movement")
+        client.execute(FACT_BUILD)
 
         for title, query in CHECKS.items():
             print(f"{title}: {client.execute(query)}")
