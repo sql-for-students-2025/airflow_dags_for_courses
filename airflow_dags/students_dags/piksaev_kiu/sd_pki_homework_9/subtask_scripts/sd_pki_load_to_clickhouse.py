@@ -1,9 +1,5 @@
-import urllib.error
-import urllib.parse
-import urllib.request
-
 CH_HOST = "111.88.243.32"
-CH_PORT = 8123
+CH_PORT = 9000
 CH_DB = "piksaev_kiu_db"
 
 CH_LOGIN_VAR = "clickhouse_tech_user_account"
@@ -164,48 +160,42 @@ LEFT JOIN piksaev_kiu_db.dim_status AS st ON toString(st.status_name) = s.receip
 """
 
 
-def _ch_query(sql):
+def _ch_client():
     from airflow.models import Variable
+    from clickhouse_driver.client import Client
 
-    login = Variable.get(CH_LOGIN_VAR)
-    password = Variable.get(CH_PASSWORD_VAR)
-    host = Variable.get("clickhouse_host", default_var=CH_HOST)
-
-    url = f"http://{host}:{CH_PORT}/?database={urllib.parse.quote(CH_DB)}"
-    req = urllib.request.Request(url, data=sql.encode("utf-8"), method="POST")
-    req.add_header("X-ClickHouse-User", login)
-    req.add_header("X-ClickHouse-Key", password)
-
-    try:
-        with urllib.request.urlopen(req, timeout=600) as response:
-            return response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")
-        raise RuntimeError(f"ClickHouse: HTTP {error.code}: {detail}") from error
+    return Client(
+        host=Variable.get("clickhouse_host", default_var=CH_HOST),
+        port=CH_PORT,
+        user=Variable.get(CH_LOGIN_VAR),
+        password=Variable.get(CH_PASSWORD_VAR),
+        database=CH_DB,
+    )
 
 
-def rebuild_dimensions_and_fact():
+def rebuild_dimensions_and_fact(client):
     for statement in SQL_TRUNCATE_TARGETS:
-        _ch_query(statement)
+        client.execute(statement)
     for statement in SQL_DIMENSIONS:
-        _ch_query(statement)
-    _ch_query(SQL_FACT)
+        client.execute(statement)
+    client.execute(SQL_FACT)
 
 
 def load_s3_to_clickhouse(**context):
-    _ch_query(SQL_TRUNCATE_STG)
-    _ch_query(SQL_LOAD_STG)
+    with _ch_client() as client:
+        client.execute(SQL_TRUNCATE_STG)
+        client.execute(SQL_LOAD_STG)
 
-    rows_all = int(_ch_query(SQL_COUNT_STG).strip() or 0)
-    rows_lines = int(_ch_query(SQL_COUNT_LINES).strip() or 0)
-    print(f"ClickHouse: в staging {rows_all} строк, из них receipt_line {rows_lines}")
+        rows_all = client.execute(SQL_COUNT_STG)[0][0]
+        rows_lines = client.execute(SQL_COUNT_LINES)[0][0]
+        print(f"ClickHouse: в staging {rows_all} строк, из них receipt_line {rows_lines}")
 
-    if rows_all == 0:
-        print("ClickHouse: staging пуст, справочники и факт не трогаем")
-        return
+        if rows_all == 0:
+            print("ClickHouse: staging пуст, справочники и факт не трогаем")
+            return
 
-    if rows_lines == 0:
-        raise RuntimeError("в staging нет строк с event_type='receipt_line'")
+        if rows_lines == 0:
+            raise RuntimeError("в staging нет строк с event_type='receipt_line'")
 
-    rebuild_dimensions_and_fact()
-    print("ClickHouse: справочники и факт перезалиты из S3")
+        rebuild_dimensions_and_fact(client)
+        print("ClickHouse: справочники и факт перезалиты из S3")
