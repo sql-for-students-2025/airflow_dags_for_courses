@@ -15,11 +15,9 @@ def upload_to_s3(**context) -> None:
     access_key = Variable.get("s3_dad_ksu_dataplatform_access_key")
     secret_key = Variable.get("s3_dad_ksu_dataplatform_secret_key")
 
-    # Сами восстанавливаем путь к файлу по run_id (без XCom)
     run_id = context["run_id"].replace(":", "_").replace("+", "_")
-    local_file = f"/tmp/rabbit_{run_id}/{run_id}.json"
     
-    # Если папка называется иначе (mkdtemp создает рандомный суффикс), найдем файл
+    # Ищем локальный файл
     import glob
     matching_files = glob.glob(f"/tmp/rabbit_*/{run_id}.json")
     if matching_files:
@@ -45,22 +43,11 @@ def load_s3_to_clickhouse(**context) -> None:
     ch_user = Variable.get("clickhouse_tech_user_account")
     ch_pass = Variable.get("clickhouse_tech_user_password")
 
-    # Восстанавливаем имя ключа S3 по run_id (без XCom)
     run_id = context["run_id"].replace(":", "_").replace("+", "_")
     s3_key = f"DATA/{MY_LOGIN}/{run_id}.json"
-
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=S3_ENDPOINT,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        verify=False
-    )
-    tmp_path = f"/tmp/{run_id}_download.json"
-    s3.download_file(S3_BUCKET, s3_key, tmp_path)
-
-    with open(tmp_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
+    
+    # Полный путь к файлу в S3
+    s3_url = f"{S3_ENDPOINT}/{S3_BUCKET}/{s3_key}"
 
     with Client(
         host=CH_HOST,
@@ -69,13 +56,21 @@ def load_s3_to_clickhouse(**context) -> None:
         database=f"{MY_LOGIN}_db",
         port=9000,
     ) as client:
-        # 1. Загружаем в сырую таблицу
-        insert_query = f"INSERT INTO fact_orders_raw FORMAT JSONEachRow\n{raw_text}"
+        
+        # 1. Грузим в стейджинг СИЛАМИ CLICKHOUSE
+        # Передаем URL файла, ключи и формат JSONEachRow
+        insert_query = f"""
+            INSERT INTO fact_orders_raw 
+            SELECT * FROM s3(
+                '{s3_url}',
+                '{access_key}',
+                '{secret_key}',
+                'JSONEachRow'
+            )
+        """
         client.execute(insert_query)
 
-        # 2. Заполняем справочники из сырой таблицы (Исправлено!)
-        
-        # 2.1. dim_customer
+        # 2. Заполняем справочники
         client.execute("""
             INSERT INTO dim_customer (customer_id, segment, customer_type, country, city)
             SELECT DISTINCT 
@@ -88,7 +83,6 @@ def load_s3_to_clickhouse(**context) -> None:
             WHERE customer_id NOT IN (SELECT customer_id FROM dim_customer)
         """)
 
-        # 2.2. dim_product
         client.execute("""
             INSERT INTO dim_product (product_id, category, brand)
             SELECT DISTINCT 
@@ -99,7 +93,6 @@ def load_s3_to_clickhouse(**context) -> None:
             WHERE product_id NOT IN (SELECT product_id FROM dim_product)
         """)
 
-        # 2.3. dim_region
         client.execute("""
             INSERT INTO dim_region (region_code, region_name, country)
             SELECT DISTINCT 
