@@ -40,6 +40,12 @@ def execute_query(cfg, query, s3_params=None):
         timeout=300,
     )
 
+    if not response.ok:
+    logging.error(
+        "ClickHouse HTTP error %s: %s",
+        response.status_code,
+        response.text
+    )
     response.raise_for_status()
     return response.text.strip()
 
