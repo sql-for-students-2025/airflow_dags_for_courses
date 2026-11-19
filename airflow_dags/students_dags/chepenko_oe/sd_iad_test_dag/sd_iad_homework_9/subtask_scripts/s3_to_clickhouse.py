@@ -41,12 +41,13 @@ def execute_query(cfg, query, s3_params=None):
     )
 
     if not response.ok:
-    logging.error(
-        "ClickHouse HTTP error %s: %s",
-        response.status_code,
-        response.text
-    )
-    response.raise_for_status()
+        LOG.error(
+            "ClickHouse HTTP error %s: %s",
+            response.status_code,
+            response.text
+        )
+        response.raise_for_status()
+
     return response.text.strip()
 
 
@@ -133,7 +134,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
 
     LOG.info("Начинаем обработку файла: %s", s3_key)
 
-    # 1. Проверяем, что файл существует и содержит данные.
+    # 1. Проверяем исходный файл.
 
     source_count = execute_query(
         cfg,
@@ -147,7 +148,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
 
     LOG.info("Исходных строк в Parquet: %s", source_count)
 
-    # 2. Очищаем staging перед новой загрузкой.
+    # 2. Очищаем staging перед загрузкой.
 
     for table in STAGE_TABLES:
         execute_query(
@@ -155,8 +156,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
             f"TRUNCATE TABLE {CH_DATABASE}.{table}"
         )
 
-    # 3. Загружаем справочник дат.
-    # Сохраняем старые даты и добавляем новые.
+    # 3. Формируем справочники.
 
     queries = {
         "dim_date_stage": f"""
@@ -282,13 +282,13 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
         """,
     }
 
-    # 4. Загружаем данные во все staging-таблицы.
+    # 4. Загружаем данные в staging.
 
     for table, query in queries.items():
         execute_query(cfg, query, s3_params)
         LOG.info("Загрузка в %s завершена", table)
 
-    # 5. Проверяем справочники на дубликаты.
+    # 5. Проверяем справочники.
 
     checks = [
         ("dim_date_stage", "date_key", "date_key"),
@@ -305,7 +305,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
             surrogate_key,
         )
 
-    # 6. Подменяем основные таблицы staging-таблицами.
+    # 6. Подмена основных таблиц.
 
     exchanges = [
         ("dim_date", "dim_date_stage"),
@@ -330,7 +330,6 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
         )
 
     # 7. Загружаем фактовую таблицу.
-    # Повторно существующие supply_line_id не загружаем.
 
     fact_query = f"""
         INSERT INTO {CH_DATABASE}.fact_supply_lines
@@ -414,13 +413,19 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
 
     LOG.info("Загрузка fact_supply_lines завершена")
 
-    # 8. Очищаем staging после успешной подмены.
+    # 8. Очищаем staging после подмены.
 
     for table in STAGE_TABLES:
         execute_query(
             cfg,
             f"TRUNCATE TABLE {CH_DATABASE}.{table}"
         )
+        LOG.info("Staging-таблица %s очищена", table)
+
+    LOG.info("ДЗ №10: загрузка успешно завершена")
+
+    return int(source_count)
+
 
         LOG.info("Staging-таблица %s очищена", table)
 
