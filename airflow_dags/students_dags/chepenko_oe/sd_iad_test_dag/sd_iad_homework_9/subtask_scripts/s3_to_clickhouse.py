@@ -11,176 +11,21 @@ BUCKET = "dad-ksu-datalab"
 S3_ENDPOINT = "https://storage.yandexcloud.net"
 CH_DATABASE = "chepenko_oe_db"
 
-# Источник данных: Parquet-файл в S3. Параметры подставляются ClickHouse
-# через HTTP query parameters (param_s3_url и т.д.), а не форматированием строки.
-SOURCE = """
-    s3(
-        {s3_url:String},
-        {s3_access:String},
-        {s3_secret:String},
-        'Parquet'
-    )
-"""
-
-
-def key_expr(prefix, column):
-    """Суррогатный ключ UInt32 из натурального ключа (одинаков для dim и fact).
-    Формула не меняется, чтобы ключи совпадали с уже загруженными данными."""
-    return (
-        f"toUInt32(conv(substring("
-        f"hex(SHA256(concat('{prefix}:', toString({column})))), 1, 8), 16, 10))"
-    )
-
-
-# Описание справочников:
-#   dim         — боевая таблица
-#   stage       — стейджовая таблица (создаётся по структуре dim)
-#   natural     — натуральный ключ
-#   surrogate   — суррогатный ключ
-#   check_by    — по каким колонкам проверяем уникальность
-#   query       — SELECT, который собирает полный новый снимок справочника:
-#                 старые строки из dim + новые из файла. При конфликте
-#                 побеждают данные из файла (prio = 1), но NULL из файла
-#                 не затирает уже известное значение.
-DIMENSIONS = [
-    {
-        "dim": "dim_date",
-        "stage": "dim_date_stage",
-        "columns": "date_key, date",
-        "check": ("date_key", "date_key"),
-        "query": f"""
-            SELECT
-                date_key,
-                any(date_value)
-            FROM
-            (
-                SELECT
-                    toUInt32(date_key) AS date_key,
-                    toDate(date) AS date_value
-                FROM {CH_DATABASE}.dim_date
-
-                UNION ALL
-
-                SELECT
-                    toUInt32(toYYYYMMDD(toDate(event_time))) AS date_key,
-                    toDate(event_time) AS date_value
-                FROM {SOURCE}
-            )
-            GROUP BY date_key
-        """,
-    },
-    {
-        "dim": "dim_supplies",
-        "stage": "dim_supplies_stage",
-        "columns": "supplier_key, supplier_id, name, country",
-        "check": ("supplier_id", "supplier_key"),
-        "query": f"""
-            SELECT
-                {key_expr('supplier', 'supplier_id')},
-                supplier_id,
-                argMaxIf(name, prio, name IS NOT NULL),
-                argMaxIf(country, prio, country IS NOT NULL)
-            FROM
-            (
-                SELECT
-                    toString(supplier_id) AS supplier_id,
-                    name,
-                    country,
-                    0 AS prio
-                FROM {CH_DATABASE}.dim_supplies
-
-                UNION ALL
-
-                SELECT
-                    toString(supplier_id),
-                    supplier_name,
-                    supplier_country,
-                    1
-                FROM {SOURCE}
-            )
-            GROUP BY supplier_id
-        """,
-    },
-    {
-        "dim": "dim_product",
-        "stage": "dim_product_stage",
-        "columns": "product_key, product_id, name, category, brand",
-        "check": ("product_id", "product_key"),
-        "query": f"""
-            SELECT
-                {key_expr('product', 'product_id')},
-                product_id,
-                argMaxIf(name, prio, name IS NOT NULL),
-                argMaxIf(category, prio, category IS NOT NULL),
-                argMaxIf(brand, prio, brand IS NOT NULL)
-            FROM
-            (
-                SELECT
-                    toString(product_id) AS product_id,
-                    name,
-                    category,
-                    brand,
-                    0 AS prio
-                FROM {CH_DATABASE}.dim_product
-
-                UNION ALL
-
-                SELECT
-                    toString(product_id),
-                    product_name,
-                    product_category,
-                    product_brand,
-                    1
-                FROM {SOURCE}
-            )
-            GROUP BY product_id
-        """,
-    },
-    {
-        "dim": "dim_warehouse",
-        "stage": "dim_warehouse_stage",
-        "columns": "warehouse_key, warehouse_id, name, city",
-        "check": ("warehouse_id", "warehouse_key"),
-        "query": f"""
-            SELECT
-                {key_expr('warehouse', 'warehouse_id')},
-                warehouse_id,
-                argMaxIf(name, prio, name IS NOT NULL),
-                argMaxIf(city, prio, city IS NOT NULL)
-            FROM
-            (
-                SELECT
-                    toString(warehouse_id) AS warehouse_id,
-                    name,
-                    city,
-                    0 AS prio
-                FROM {CH_DATABASE}.dim_warehouse
-
-                UNION ALL
-
-                SELECT
-                    toString(warehouse_id),
-                    warehouse_name,
-                    CAST(NULL, 'Nullable(String)'),
-                    1
-                FROM {SOURCE}
-            )
-            GROUP BY warehouse_id
-        """,
-    },
+STAGE_TABLES = [
+    "dim_date_stage",
+    "dim_supplies_stage",
+    "dim_product_stage",
+    "dim_warehouse_stage",
 ]
 
 
 def execute_query(cfg, query, s3_params=None):
-    """Выполняет SQL-запрос в ClickHouse через HTTP.
-
-    Текст запроса отправляется в теле POST (длинные запросы не упираются
-    в лимит длины URL), параметры s3 — через param_*.
-    """
+    """Выполняет SQL-запрос в ClickHouse через HTTP."""
 
     url = f"http://{cfg['ch_host']}:{cfg['ch_port']}/"
 
-    params = {}
+    params = {"query": query}
+
     if s3_params:
         params.update({
             "param_s3_url": s3_params["url"],
@@ -191,7 +36,6 @@ def execute_query(cfg, query, s3_params=None):
     response = requests.post(
         url,
         params=params,
-        data=query.encode("utf-8"),
         auth=(cfg["ch_user"], cfg["ch_password"]),
         timeout=300,
     )
@@ -200,7 +44,7 @@ def execute_query(cfg, query, s3_params=None):
         LOG.error(
             "ClickHouse HTTP error %s: %s",
             response.status_code,
-            response.text,
+            response.text
         )
         response.raise_for_status()
 
@@ -208,100 +52,70 @@ def execute_query(cfg, query, s3_params=None):
 
 
 def make_s3_url(s3_key):
-    if s3_key.startswith(("http://", "https://")):
+    if s3_key.startswith("http://") or s3_key.startswith("https://"):
         return s3_key
 
     return f"{S3_ENDPOINT}/{BUCKET}/{s3_key.lstrip('/')}"
 
 
-def resolve_s3_key(s3_key, s3_path, kwargs):
-    """Определяет путь к файлу. Jinja-шаблон с пустым XCom рендерится
-    в строку 'None' — её тоже считаем отсутствием данных."""
+def check_duplicates(cfg, table, natural_key, surrogate_key):
+    """Проверяет дубликаты в staging и пишет результат в лог."""
 
-    for candidate in (s3_key, s3_path):
-        if candidate and str(candidate).strip() not in ("None", "null", ""):
-            return str(candidate).strip()
-
-    ti = kwargs.get("ti")
-    if ti:
-        value = ti.xcom_pull(task_ids="chepenko_oe_rabbit_to_s3")
-        if value and str(value).strip() not in ("None", "null", ""):
-            return str(value).strip()
-
-    return None
-
-
-def truncate_stage(cfg, stage):
-    """Stage-таблицы уже созданы в ClickHouse — только очищаем их."""
-
-    execute_query(cfg, f"TRUNCATE TABLE {CH_DATABASE}.{stage}")
-    LOG.info("Stage-таблица %s очищена", stage)
-
-
-def swap_tables(cfg, dim, stage):
-    """Атомарно меняет местами dim и stage (база на движке Atomic)."""
-
-    execute_query(
-        cfg,
-        f"EXCHANGE TABLES {CH_DATABASE}.{dim} AND {CH_DATABASE}.{stage}",
-    )
-    LOG.info("Выполнена подмена %s <-> %s", dim, stage)
-
-
-def count_rows(cfg, table):
-    return int(execute_query(
-        cfg,
-        f"SELECT count() FROM {CH_DATABASE}.{table} FORMAT TabSeparated",
-    ))
-
-
-def check_stage(cfg, dim, stage, natural_key, surrogate_key):
-    """Проверяет stage перед подменой:
-    - не пустая;
-    - нет дублей натурального ключа и коллизий суррогатного;
-    - в stage не меньше строк, чем в текущей dim (ничего не потеряли).
-    """
-
-    result = execute_query(cfg, f"""
+    query = f"""
         SELECT
             count(),
             uniqExact({natural_key}),
             uniqExact({surrogate_key})
-        FROM {CH_DATABASE}.{stage}
+        FROM {CH_DATABASE}.{table}
         FORMAT TabSeparated
-    """)
-    total, unique_natural, unique_surrogate = map(int, result.split("\t"))
-    dim_total = count_rows(cfg, dim)
+    """
+
+    result = execute_query(cfg, query)
+    total, unique_natural, unique_surrogate = map(
+        int, result.split("\t")
+    )
 
     LOG.info(
-        "%s: строк=%s (в %s было %s), уникальных натуральных=%s, "
-        "уникальных суррогатных=%s",
-        stage, total, dim, dim_total, unique_natural, unique_surrogate,
+        "%s: строк=%s, уникальных натуральных ключей=%s, "
+        "уникальных суррогатных ключей=%s",
+        table,
+        total,
+        unique_natural,
+        unique_surrogate,
     )
 
     if total == 0:
-        raise ValueError(f"{stage}: stage-таблица пустая")
+        raise ValueError(f"{table}: staging-таблица пустая")
 
     if total != unique_natural or total != unique_surrogate:
-        raise ValueError(f"{stage}: обнаружены дубликаты или коллизии ключей")
-
-    if total < dim_total:
         raise ValueError(
-            f"{stage}: строк меньше, чем в {dim} ({total} < {dim_total})"
+            f"{table}: обнаружены дубликаты или коллизии ключей"
         )
+
+    LOG.info("%s: проверка дубликатов пройдена", table)
 
 
 def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
     """
-    S3 -> stage -> проверки -> EXCHANGE stage <-> dim -> факты -> очистка stage.
+    S3 -> staging -> проверки -> EXCHANGE -> загрузка фактов -> TRUNCATE.
     """
 
     cfg = get_connection_settings()
 
-    s3_key = resolve_s3_key(s3_key, s3_path, kwargs)
+    if not s3_key:
+        s3_key = s3_path
+
+    if not s3_key:
+        ti = kwargs.get("ti")
+
+        if ti:
+            s3_key = ti.xcom_pull(
+                task_ids="chepenko_oe_rabbit_to_s3"
+            )
+
     if not s3_key:
         LOG.info("Новых данных нет")
-        return None
+        return
 
     s3_params = {
         "url": make_s3_url(s3_key),
@@ -309,43 +123,214 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
         "secret": cfg["s3_secret"],
     }
 
+    source = """
+        s3(
+            {s3_url:String},
+            {s3_access:String},
+            {s3_secret:String},
+            'Parquet'
+        )
+    """
+
     LOG.info("Начинаем обработку файла: %s", s3_key)
 
     # 1. Проверяем исходный файл.
-    source_count = int(execute_query(
+
+    source_count = execute_query(
         cfg,
-        f"SELECT count() FROM {SOURCE} FORMAT TabSeparated",
+        f"SELECT count() FROM {source} FORMAT TabSeparated",
         s3_params,
-    ))
-    if source_count == 0:
+    )
+
+    if int(source_count) == 0:
         LOG.info("Parquet-файл пуст. Загрузка пропущена.")
-        return 0
+        return
 
     LOG.info("Исходных строк в Parquet: %s", source_count)
 
-    # 2. Очищаем stage-таблицы и наполняем их полным новым снимком
-    #    справочника (старые данные из dim + новые из файла).
-    for d in DIMENSIONS:
-        truncate_stage(cfg, d["stage"])
+    # 2. Очищаем staging перед загрузкой.
+
+    for table in STAGE_TABLES:
         execute_query(
             cfg,
-            f"INSERT INTO {CH_DATABASE}.{d['stage']} ({d['columns']}) "
-            f"{d['query']}",
-            s3_params,
+            f"TRUNCATE TABLE {CH_DATABASE}.{table}"
         )
-        LOG.info("Загрузка в %s завершена", d["stage"])
 
-    # 3. Проверяем ВСЕ stage до первой подмены: если хоть одна проверка
-    #    не прошла, боевые dim-таблицы остаются нетронутыми.
-    for d in DIMENSIONS:
-        natural_key, surrogate_key = d["check"]
-        check_stage(cfg, d["dim"], d["stage"], natural_key, surrogate_key)
+    # 3. Формируем справочники.
 
-    # 4. Подмена: dim получает новые данные, stage — старые.
-    for d in DIMENSIONS:
-        swap_tables(cfg, d["dim"], d["stage"])
+    queries = {
+        "dim_date_stage": f"""
+            INSERT INTO {CH_DATABASE}.dim_date_stage
+                (date_key, date)
+            SELECT
+                date_key,
+                toDateTime(date_value)
+            FROM
+            (
+                SELECT
+                    toUInt32(date_key) AS date_key,
+                    toDate(date) AS date_value
+                FROM {CH_DATABASE}.dim_date
 
-    # 5. Загружаем факты (только новые supply_line_id).
+                UNION ALL
+
+                SELECT
+                    toYYYYMMDD(toDate(event_time)) AS date_key,
+                    toDate(event_time) AS date_value
+                FROM {source}
+            )
+            GROUP BY date_key, date_value
+        """,
+
+        "dim_supplies_stage": f"""
+            INSERT INTO {CH_DATABASE}.dim_supplies_stage
+                (supplier_key, supplier_id, name, country)
+            SELECT
+                toUInt32(conv(
+                    substring(
+                        hex(SHA256(concat('supplier:', supplier_id))),
+                        1, 8
+                    ), 16, 10
+                )),
+                supplier_id,
+                any(name),
+                any(country)
+            FROM
+            (
+                SELECT
+                    toString(supplier_id) AS supplier_id,
+                    name,
+                    country
+                FROM {CH_DATABASE}.dim_supplies
+
+                UNION ALL
+
+                SELECT
+                    toString(supplier_id) AS supplier_id,
+                    supplier_name AS name,
+                    supplier_country AS country
+                FROM {source}
+            )
+            GROUP BY supplier_id
+        """,
+
+        "dim_product_stage": f"""
+            INSERT INTO {CH_DATABASE}.dim_product_stage
+                (product_key, product_id, name, category, brand)
+            SELECT
+                toUInt32(conv(
+                    substring(
+                        hex(SHA256(concat('product:', product_id))),
+                        1, 8
+                    ), 16, 10
+                )),
+                product_id,
+                any(name),
+                any(category),
+                any(brand)
+            FROM
+            (
+                SELECT
+                    toString(product_id) AS product_id,
+                    name,
+                    category,
+                    brand
+                FROM {CH_DATABASE}.dim_product
+
+                UNION ALL
+
+                SELECT
+                    toString(product_id) AS product_id,
+                    product_name AS name,
+                    product_category AS category,
+                    product_brand AS brand
+                FROM {source}
+            )
+            GROUP BY product_id
+        """,
+
+        "dim_warehouse_stage": f"""
+            INSERT INTO {CH_DATABASE}.dim_warehouse_stage
+                (warehouse_key, warehouse_id, name, city)
+            SELECT
+                toUInt32(conv(
+                    substring(
+                        hex(SHA256(concat('warehouse:', warehouse_id))),
+                        1, 8
+                    ), 16, 10
+                )),
+                warehouse_id,
+                any(name),
+                any(city)
+            FROM
+            (
+                SELECT
+                    toString(warehouse_id) AS warehouse_id,
+                    name,
+                    city
+                FROM {CH_DATABASE}.dim_warehouse
+
+                UNION ALL
+
+                SELECT
+                    toString(warehouse_id) AS warehouse_id,
+                    warehouse_name AS name,
+                    CAST(NULL, 'Nullable(String)') AS city
+                FROM {source}
+            )
+            GROUP BY warehouse_id
+        """,
+    }
+
+    # 4. Загружаем данные в staging.
+
+    for table, query in queries.items():
+        execute_query(cfg, query, s3_params)
+        LOG.info("Загрузка в %s завершена", table)
+
+    # 5. Проверяем справочники.
+
+    checks = [
+        ("dim_date_stage", "date_key", "date_key"),
+        ("dim_supplies_stage", "supplier_id", "supplier_key"),
+        ("dim_product_stage", "product_id", "product_key"),
+        ("dim_warehouse_stage", "warehouse_id", "warehouse_key"),
+    ]
+
+    for table, natural_key, surrogate_key in checks:
+        check_duplicates(
+            cfg,
+            table,
+            natural_key,
+            surrogate_key,
+        )
+
+    # 6. Подмена основных таблиц.
+
+    exchanges = [
+        ("dim_date", "dim_date_stage"),
+        ("dim_supplies", "dim_supplies_stage"),
+        ("dim_product", "dim_product_stage"),
+        ("dim_warehouse", "dim_warehouse_stage"),
+    ]
+
+    for production, stage in exchanges:
+        query = f"""
+            EXCHANGE TABLES
+                {CH_DATABASE}.{production}
+            AND
+                {CH_DATABASE}.{stage}
+        """
+
+        execute_query(cfg, query)
+        LOG.info(
+            "Выполнена подмена %s <-> %s",
+            production,
+            stage,
+        )
+
+    # 7. Загружаем фактовую таблицу.
+
     fact_query = f"""
         INSERT INTO {CH_DATABASE}.fact_supply_lines
         (
@@ -364,11 +349,31 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
             supply_line_id
         )
         SELECT
-            {key_expr('supply_line', 'src.supply_line_id')},
-            toUInt32(toYYYYMMDD(toDate(src.event_time))),
-            {key_expr('supplier', 'src.supplier_id')},
-            {key_expr('warehouse', 'src.warehouse_id')},
-            {key_expr('product', 'src.product_id')},
+            toUInt32(conv(
+                substring(
+                    hex(SHA256(concat('supply_line:', src.supply_line_id))),
+                    1, 8
+                ), 16, 10
+            )),
+            toYYYYMMDD(toDate(src.event_time)),
+            toUInt32(conv(
+                substring(
+                    hex(SHA256(concat('supplier:', src.supplier_id))),
+                    1, 8
+                ), 16, 10
+            )),
+            toUInt32(conv(
+                substring(
+                    hex(SHA256(concat('warehouse:', src.warehouse_id))),
+                    1, 8
+                ), 16, 10
+            )),
+            toUInt32(conv(
+                substring(
+                    hex(SHA256(concat('product:', src.product_id))),
+                    1, 8
+                ), 16, 10
+            )),
             src.supply_id,
             toInt32(src.ordered_qty),
             toInt32(src.received_qty),
@@ -392,7 +397,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
                 any(received_amount) AS received_amount,
                 any(unit_price) AS unit_price,
                 any(delay_days) AS delay_days
-            FROM {SOURCE}
+            FROM {source}
             GROUP BY supply_line_id
         ) AS src
         LEFT ANTI JOIN
@@ -403,12 +408,20 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
         ) AS old
         USING (supply_line_id)
     """
+
     execute_query(cfg, fact_query, s3_params)
+
     LOG.info("Загрузка fact_supply_lines завершена")
 
-    # 6. После подмены в stage лежат старые версии справочников — очищаем.
-    for d in DIMENSIONS:
-        truncate_stage(cfg, d["stage"])
+    # 8. Очищаем staging после подмены.
 
-    LOG.info("Загрузка успешно завершена")
-    return source_count
+    for table in STAGE_TABLES:
+        execute_query(
+            cfg,
+            f"TRUNCATE TABLE {CH_DATABASE}.{table}"
+        )
+        LOG.info("Staging-таблица %s очищена", table)
+
+    LOG.info("ДЗ №10: загрузка успешно завершена")
+
+    return int(source_count)
