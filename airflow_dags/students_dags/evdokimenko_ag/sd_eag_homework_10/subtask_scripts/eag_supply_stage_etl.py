@@ -255,10 +255,11 @@ def s3_to_stage(**context):
         _ch(f'TRUNCATE TABLE {stage}')
         _ch(f"""
             INSERT INTO {stage} ({cfg['columns']})
-            SELECT {cfg['columns']} FROM {prod}
-            WHERE {cfg['key']} NOT IN (SELECT {cfg['key']} FROM ({new_rows}))
-            UNION ALL
             SELECT {cfg['columns']} FROM ({new_rows})""")
+        _ch(f"""
+            INSERT INTO {stage} ({cfg['columns']})
+            SELECT {cfg['columns']} FROM {prod}
+            WHERE {cfg['key']} NOT IN (SELECT {cfg['key']} FROM {stage})""")
         rows = _ch(f'SELECT count() FROM {stage}')[0][0]
         log.info('%s: в stage загружено %s строк (старые + новые из %s)', stage, rows, key)
 
