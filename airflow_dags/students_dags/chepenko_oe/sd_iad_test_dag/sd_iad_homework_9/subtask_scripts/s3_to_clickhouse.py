@@ -1,5 +1,14 @@
 
+import io
+import json
+import hashlib
 import logging
+
+from datetime import datetime
+from decimal import Decimal
+
+import boto3
+import pyarrow.parquet as pq
 import requests
 
 from subtask_scripts.config import get_connection_settings
@@ -9,419 +18,304 @@ LOG = logging.getLogger(__name__)
 
 BUCKET = "dad-ksu-datalab"
 S3_ENDPOINT = "https://storage.yandexcloud.net"
+
 CH_DATABASE = "chepenko_oe_db"
 
-STAGE_TABLES = [
-    "dim_date_stage",
-    "dim_supplies_stage",
-    "dim_product_stage",
-    "dim_warehouse_stage",
-]
+
+def make_key(namespace, value, registry):
+    """
+    Создает стабильный UInt32 ключ из исходного идентификатора.
+    Проверяет коллизии внутри текущего набора данных.
+    """
+
+    natural_id = str(value)
+
+    source = f"{namespace}:{natural_id}"
+
+    key = int.from_bytes(
+        hashlib.sha256(source.encode("utf-8")).digest()[:4],
+        byteorder="big",
+    )
+
+    registry_key = (namespace, key)
+
+    previous = registry.get(registry_key)
+
+    if previous is not None and previous != natural_id:
+        raise ValueError(
+            f"Коллизия ключей {namespace}: "
+            f"{previous} и {natural_id}"
+        )
+
+    registry[registry_key] = natural_id
+
+    return key
 
 
-def execute_query(cfg, query, s3_params=None):
-    """Выполняет SQL-запрос в ClickHouse через HTTP."""
+def insert_json_each_row(cfg, table_name, rows):
+
+    if not rows:
+        LOG.info("Таблица %s: нет строк для загрузки", table_name)
+        return
 
     url = f"http://{cfg['ch_host']}:{cfg['ch_port']}/"
 
-    params = {"query": query}
+    query = (
+        f"INSERT INTO {CH_DATABASE}.{table_name} "
+        f"FORMAT JSONEachRow"
+    )
 
-    if s3_params:
-        params.update({
-            "param_s3_url": s3_params["url"],
-            "param_s3_access": s3_params["access"],
-            "param_s3_secret": s3_params["secret"],
-        })
+    data = "\n".join(
+        json.dumps(
+            row,
+            ensure_ascii=False,
+            default=str,
+        )
+        for row in rows
+    )
 
     response = requests.post(
         url,
-        params=params,
-        auth=(cfg["ch_user"], cfg["ch_password"]),
-        timeout=300,
+        params={"query": query},
+        data=data.encode("utf-8"),
+        auth=(
+            cfg["ch_user"],
+            cfg["ch_password"],
+        ),
+        timeout=120,
     )
 
-    if not response.ok:
-        LOG.error(
-            "ClickHouse HTTP error %s: %s",
-            response.status_code,
-            response.text
-        )
-        response.raise_for_status()
-
-    return response.text.strip()
-
-
-def make_s3_url(s3_key):
-    if s3_key.startswith("http://") or s3_key.startswith("https://"):
-        return s3_key
-
-    return f"{S3_ENDPOINT}/{BUCKET}/{s3_key.lstrip('/')}"
-
-
-def check_duplicates(cfg, table, natural_key, surrogate_key):
-    """Проверяет дубликаты в staging и пишет результат в лог."""
-
-    query = f"""
-        SELECT
-            count(),
-            uniqExact({natural_key}),
-            uniqExact({surrogate_key})
-        FROM {CH_DATABASE}.{table}
-        FORMAT TabSeparated
-    """
-
-    result = execute_query(cfg, query)
-    total, unique_natural, unique_surrogate = map(
-        int, result.split("\t")
-    )
+    response.raise_for_status()
 
     LOG.info(
-        "%s: строк=%s, уникальных натуральных ключей=%s, "
-        "уникальных суррогатных ключей=%s",
-        table,
-        total,
-        unique_natural,
-        unique_surrogate,
+        "В таблицу %s загружено %s строк",
+        table_name,
+        len(rows),
     )
 
-    if total == 0:
-        raise ValueError(f"{table}: staging-таблица пустая")
 
-    if total != unique_natural or total != unique_surrogate:
-        raise ValueError(
-            f"{table}: обнаружены дубликаты или коллизии ключей"
-        )
-
-    LOG.info("%s: проверка дубликатов пройдена", table)
-
-
-def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
-    """
-    S3 -> staging -> проверки -> EXCHANGE -> загрузка фактов -> TRUNCATE.
-    """
+def load_s3_to_clickhouse(s3_key=None, **kwargs):
 
     cfg = get_connection_settings()
 
     if not s3_key:
-        s3_key = s3_path
+        ti = kwargs["ti"]
 
-    if not s3_key:
-        ti = kwargs.get("ti")
-
-        if ti:
-            s3_key = ti.xcom_pull(
-                task_ids="chepenko_oe_rabbit_to_s3"
-            )
-
-    if not s3_key:
-        LOG.info("Новых данных нет")
-        return
-
-    s3_params = {
-        "url": make_s3_url(s3_key),
-        "access": cfg["s3_access"],
-        "secret": cfg["s3_secret"],
-    }
-
-    source = """
-        s3(
-            {s3_url:String},
-            {s3_access:String},
-            {s3_secret:String},
-            'Parquet'
+        s3_key = ti.xcom_pull(
+            task_ids="chepenko_oe_rabbit_to_s3"
         )
-    """
 
-    LOG.info("Начинаем обработку файла: %s", s3_key)
+    if not s3_key:
+        raise ValueError("Не получен путь к Parquet-файлу из XCom")
 
-    # 1. Проверяем исходный файл.
+    LOG.info("Начинаем загрузку файла %s", s3_key)
 
-    source_count = execute_query(
-        cfg,
-        f"SELECT count() FROM {source} FORMAT TabSeparated",
-        s3_params,
+    session = boto3.session.Session()
+
+    s3 = session.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=cfg["s3_access"],
+        aws_secret_access_key=cfg["s3_secret"],
     )
 
-    if int(source_count) == 0:
-        LOG.info("Parquet-файл пуст. Загрузка пропущена.")
-        return
+    response = s3.get_object(
+        Bucket=BUCKET,
+        Key=s3_key,
+    )
 
-    LOG.info("Исходных строк в Parquet: %s", source_count)
+    parquet_data = response["Body"].read()
 
-    # 2. Очищаем staging перед загрузкой.
+    table = pq.read_table(
+        io.BytesIO(parquet_data)
+    )
 
-    for table in STAGE_TABLES:
-        execute_query(
-            cfg,
-            f"TRUNCATE TABLE {CH_DATABASE}.{table}"
-        )
-
-    # 3. Формируем справочники.
-
-    queries = {
-        "dim_date_stage": f"""
-            INSERT INTO {CH_DATABASE}.dim_date_stage
-                (date_key, date)
-            SELECT
-                date_key,
-                toDateTime(date_value)
-            FROM
-            (
-                SELECT
-                    toUInt32(date_key) AS date_key,
-                    toDate(date) AS date_value
-                FROM {CH_DATABASE}.dim_date
-
-                UNION ALL
-
-                SELECT
-                    toYYYYMMDD(toDate(event_time)) AS date_key,
-                    toDate(event_time) AS date_value
-                FROM {source}
-            )
-            GROUP BY date_key, date_value
-        """,
-
-        "dim_supplies_stage": f"""
-            INSERT INTO {CH_DATABASE}.dim_supplies_stage
-                (supplier_key, supplier_id, name, country)
-            SELECT
-                toUInt32(conv(
-                    substring(
-                        hex(SHA256(concat('supplier:', supplier_id))),
-                        1, 8
-                    ), 16, 10
-                )),
-                supplier_id,
-                any(name),
-                any(country)
-            FROM
-            (
-                SELECT
-                    toString(supplier_id) AS supplier_id,
-                    name,
-                    country
-                FROM {CH_DATABASE}.dim_supplies
-
-                UNION ALL
-
-                SELECT
-                    toString(supplier_id) AS supplier_id,
-                    supplier_name AS name,
-                    supplier_country AS country
-                FROM {source}
-            )
-            GROUP BY supplier_id
-        """,
-
-        "dim_product_stage": f"""
-            INSERT INTO {CH_DATABASE}.dim_product_stage
-                (product_key, product_id, name, category, brand)
-            SELECT
-                toUInt32(conv(
-                    substring(
-                        hex(SHA256(concat('product:', product_id))),
-                        1, 8
-                    ), 16, 10
-                )),
-                product_id,
-                any(name),
-                any(category),
-                any(brand)
-            FROM
-            (
-                SELECT
-                    toString(product_id) AS product_id,
-                    name,
-                    category,
-                    brand
-                FROM {CH_DATABASE}.dim_product
-
-                UNION ALL
-
-                SELECT
-                    toString(product_id) AS product_id,
-                    product_name AS name,
-                    product_category AS category,
-                    product_brand AS brand
-                FROM {source}
-            )
-            GROUP BY product_id
-        """,
-
-        "dim_warehouse_stage": f"""
-            INSERT INTO {CH_DATABASE}.dim_warehouse_stage
-                (warehouse_key, warehouse_id, name, city)
-            SELECT
-                toUInt32(conv(
-                    substring(
-                        hex(SHA256(concat('warehouse:', warehouse_id))),
-                        1, 8
-                    ), 16, 10
-                )),
-                warehouse_id,
-                any(name),
-                any(city)
-            FROM
-            (
-                SELECT
-                    toString(warehouse_id) AS warehouse_id,
-                    name,
-                    city
-                FROM {CH_DATABASE}.dim_warehouse
-
-                UNION ALL
-
-                SELECT
-                    toString(warehouse_id) AS warehouse_id,
-                    warehouse_name AS name,
-                    CAST(NULL, 'Nullable(String)') AS city
-                FROM {source}
-            )
-            GROUP BY warehouse_id
-        """,
+    expected_columns = {
+        "supply_line_id",
+        "supply_id",
+        "event_time",
+        "supplier_id",
+        "supplier_name",
+        "supplier_country",
+        "product_id",
+        "product_name",
+        "product_category",
+        "product_brand",
+        "warehouse_id",
+        "warehouse_name",
+        "warehouse_region",
+        "ordered_qty",
+        "received_qty",
+        "shortage_qty",
+        "received_amount",
+        "unit_price",
+        "delay_days",
+        "event_type",
     }
 
-    # 4. Загружаем данные в staging.
+    actual_columns = set(table.column_names)
 
-    for table, query in queries.items():
-        execute_query(cfg, query, s3_params)
-        LOG.info("Загрузка в %s завершена", table)
+    missing_columns = expected_columns - actual_columns
 
-    # 5. Проверяем справочники.
-
-    checks = [
-        ("dim_date_stage", "date_key", "date_key"),
-        ("dim_supplies_stage", "supplier_id", "supplier_key"),
-        ("dim_product_stage", "product_id", "product_key"),
-        ("dim_warehouse_stage", "warehouse_id", "warehouse_key"),
-    ]
-
-    for table, natural_key, surrogate_key in checks:
-        check_duplicates(
-            cfg,
-            table,
-            natural_key,
-            surrogate_key,
+    if missing_columns:
+        raise ValueError(
+            f"В Parquet отсутствуют колонки: {missing_columns}"
         )
 
-    # 6. Подмена основных таблиц.
+    source_rows = table.to_pylist()
 
-    exchanges = [
-        ("dim_date", "dim_date_stage"),
-        ("dim_supplies", "dim_supplies_stage"),
-        ("dim_product", "dim_product_stage"),
-        ("dim_warehouse", "dim_warehouse_stage"),
-    ]
+    if not source_rows:
+        LOG.info("Parquet-файл пуст")
+        return
 
-    for production, stage in exchanges:
-        query = f"""
-            EXCHANGE TABLES
-                {CH_DATABASE}.{production}
-            AND
-                {CH_DATABASE}.{stage}
-        """
+    registry = {}
 
-        execute_query(cfg, query)
-        LOG.info(
-            "Выполнена подмена %s <-> %s",
-            production,
-            stage,
+    dates = {}
+    suppliers = {}
+    products = {}
+    warehouses = {}
+    facts = {}
+
+    for row in source_rows:
+
+        event_time = row["event_time"]
+
+        if not isinstance(event_time, datetime):
+            raise ValueError(
+                "event_time должен иметь тип datetime"
+            )
+
+        date_value = event_time.date()
+
+        date_key = int(date_value.strftime("%Y%m%d"))
+
+        dates[date_key] = {
+            "date_key": date_key,
+            "date": datetime.combine(
+                date_value,
+                datetime.min.time(),
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        supplier_id = str(row["supplier_id"])
+
+        supplier_key = make_key(
+            "supplier",
+            supplier_id,
+            registry,
         )
 
-    # 7. Загружаем фактовую таблицу.
+        suppliers[supplier_id] = {
+            "supplier_key": supplier_key,
+            "supplier_id": supplier_id,
+            "name": row.get("supplier_name"),
+            "country": row.get("supplier_country"),
+        }
 
-    fact_query = f"""
-        INSERT INTO {CH_DATABASE}.fact_supply_lines
-        (
-            supply_line_key,
-            date_key,
-            supplier_key,
-            warehouse_key,
-            product_key,
-            supply_id,
-            ordered_qty,
-            received_qty,
-            shortage_qty,
-            received_amount,
-            unit_price,
-            delay_days,
-            supply_line_id
+        product_id = str(row["product_id"])
+
+        product_key = make_key(
+            "product",
+            product_id,
+            registry,
         )
-        SELECT
-            toUInt32(conv(
-                substring(
-                    hex(SHA256(concat('supply_line:', src.supply_line_id))),
-                    1, 8
-                ), 16, 10
-            )),
-            toYYYYMMDD(toDate(src.event_time)),
-            toUInt32(conv(
-                substring(
-                    hex(SHA256(concat('supplier:', src.supplier_id))),
-                    1, 8
-                ), 16, 10
-            )),
-            toUInt32(conv(
-                substring(
-                    hex(SHA256(concat('warehouse:', src.warehouse_id))),
-                    1, 8
-                ), 16, 10
-            )),
-            toUInt32(conv(
-                substring(
-                    hex(SHA256(concat('product:', src.product_id))),
-                    1, 8
-                ), 16, 10
-            )),
-            src.supply_id,
-            toInt32(src.ordered_qty),
-            toInt32(src.received_qty),
-            toInt32(src.shortage_qty),
-            toDecimal64(src.received_amount, 2),
-            toDecimal64(src.unit_price, 2),
-            toInt32(src.delay_days),
-            src.supply_line_id
-        FROM
-        (
-            SELECT
-                supply_line_id,
-                any(toString(supply_id)) AS supply_id,
-                any(event_time) AS event_time,
-                any(toString(supplier_id)) AS supplier_id,
-                any(toString(product_id)) AS product_id,
-                any(toString(warehouse_id)) AS warehouse_id,
-                any(ordered_qty) AS ordered_qty,
-                any(received_qty) AS received_qty,
-                any(shortage_qty) AS shortage_qty,
-                any(received_amount) AS received_amount,
-                any(unit_price) AS unit_price,
-                any(delay_days) AS delay_days
-            FROM {source}
-            GROUP BY supply_line_id
-        ) AS src
-        LEFT ANTI JOIN
-        (
-            SELECT supply_line_id
-            FROM {CH_DATABASE}.fact_supply_lines
-            WHERE supply_line_id IS NOT NULL
-        ) AS old
-        USING (supply_line_id)
-    """
 
-    execute_query(cfg, fact_query, s3_params)
+        products[product_id] = {
+            "product_key": product_key,
+            "product_id": product_id,
+            "name": row.get("product_name"),
+            "category": row.get("product_category"),
+            "brand": row.get("product_brand"),
+        }
 
-    LOG.info("Загрузка fact_supply_lines завершена")
+        warehouse_id = str(row["warehouse_id"])
 
-    # 8. Очищаем staging после подмены.
-
-    for table in STAGE_TABLES:
-        execute_query(
-            cfg,
-            f"TRUNCATE TABLE {CH_DATABASE}.{table}"
+        warehouse_key = make_key(
+            "warehouse",
+            warehouse_id,
+            registry,
         )
-        LOG.info("Staging-таблица %s очищена", table)
 
-    LOG.info("ДЗ №10: загрузка успешно завершена")
+        warehouses[warehouse_id] = {
+            "warehouse_key": warehouse_key,
+            "warehouse_id": warehouse_id,
+            "name": row.get("warehouse_name"),
+            "city": None,
+        }
 
-    return int(source_count)
+        supply_line_id = str(row["supply_line_id"])
+
+        supply_line_key = make_key(
+            "supply_line",
+            supply_line_id,
+            registry,
+        )
+
+        facts[supply_line_id] = {
+            "supply_line_key": supply_line_key,
+            "date_key": date_key,
+            "supplier_key": supplier_key,
+            "warehouse_key": warehouse_key,
+            "product_key": product_key,
+            "supply_id": str(row["supply_id"]),
+            "ordered_qty": int(row["ordered_qty"]),
+            "received_qty": int(row["received_qty"]),
+            "shortage_qty": int(row["shortage_qty"]),
+            "received_amount": str(
+                Decimal(str(row["received_amount"]))
+            ),
+            "unit_price": str(
+                Decimal(str(row["unit_price"]))
+            ),
+            "delay_days": int(row["delay_days"]),
+            "supply_line_id": supply_line_id,
+        }
+
+    # Сначала загружаем измерения
+
+    insert_json_each_row(
+        cfg,
+        "dim_date",
+        list(dates.values()),
+    )
+
+    insert_json_each_row(
+        cfg,
+        "dim_supplies",
+        list(suppliers.values()),
+    )
+
+    insert_json_each_row(
+        cfg,
+        "dim_product",
+        list(products.values()),
+    )
+
+    insert_json_each_row(
+        cfg,
+        "dim_warehouse",
+        list(warehouses.values()),
+    )
+
+    # Затем загружаем фактовую таблицу
+
+    insert_json_each_row(
+        cfg,
+        "fact_supply_lines",
+        list(facts.values()),
+    )
+
+    LOG.info(
+        "Загрузка завершена. Исходных строк: %s. "
+        "Даты: %s, поставщики: %s, товары: %s, "
+        "склады: %s, факты: %s",
+        len(source_rows),
+        len(dates),
+        len(suppliers),
+        len(products),
+        len(warehouses),
+        len(facts),
+    )
+
+    return len(source_rows)
+
