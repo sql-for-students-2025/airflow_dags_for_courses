@@ -414,6 +414,7 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
     LOG.info("Загрузка fact_supply_lines завершена")
 
     # 8. Очищаем staging после подмены.
+   
 
     for table in STAGE_TABLES:
         execute_query(
@@ -427,8 +428,3 @@ def load_s3_to_clickhouse(s3_key=None, s3_path=None, **kwargs):
     return int(source_count)
 
 
-        LOG.info("Staging-таблица %s очищена", table)
-
-    LOG.info("ДЗ №10: загрузка успешно завершена")
-
-    return int(source_count)
